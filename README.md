@@ -2,6 +2,8 @@
 
 Ein webbasierter Editor für **Shoot 'em Ups auf dem Sega Master System**. Grafik, Gegnerwellen, Level und Sound baust du im Browser. Am Ende lädst du eine echte `.sms`-ROM herunter, die in Emulatoren und auf Original-Hardware (z. B. Everdrive) läuft.
 
+**▶ Direkt im Browser ausprobieren: https://joergsf4.github.io/shootmaster/**
+
 ![Level-Editor](docs/img/level-editor.png)
 
 ## Funktionen
