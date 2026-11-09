@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { smsToCss } from '@sms/core';
+import { flipH, flipV, smsToCss } from '@sms/core';
 import { paletteRgb, pixelsToImage } from '../gfx';
 
 type Tool = 'pen' | 'fill' | 'pick' | 'line';
@@ -125,8 +125,8 @@ export function PixelEditor({ pixels, width, height, palette, transparent0, cell
           </button>
         ))}
         <span className="sep" />
-        <button onClick={() => onChange(flip(pixels, width, height, true))}>⇋ H</button>
-        <button onClick={() => onChange(flip(pixels, width, height, false))}>⇵ V</button>
+        <button onClick={() => onChange(flipH(pixels, width, height))}>⇋ H</button>
+        <button onClick={() => onChange(flipV(pixels, width, height))}>⇵ V</button>
         <button onClick={() => onChange(shift(pixels, width, height, -1, 0))}>←</button>
         <button onClick={() => onChange(shift(pixels, width, height, 1, 0))}>→</button>
         <button onClick={() => onChange(shift(pixels, width, height, 0, -1))}>↑</button>
@@ -151,11 +151,6 @@ export function PixelEditor({ pixels, width, height, palette, transparent0, cell
   );
 }
 
-function flip(px: number[], w: number, h: number, horiz: boolean) {
-  const o: number[] = [];
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.push(horiz ? px[y * w + (w - 1 - x)] : px[(h - 1 - y) * w + x]);
-  return o;
-}
 function shift(px: number[], w: number, h: number, dx: number, dy: number) {
   const o: number[] = [];
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.push(px[((y - dy + h) % h) * w + ((x - dx + w) % w)]);

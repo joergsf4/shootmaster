@@ -20,7 +20,7 @@ await page.addInitScript(() => localStorage.setItem('sms-shmup-tour-done', '1'))
 await page.goto(url);
 await page.waitForTimeout(800);
 
-const tabs = [['levels', 'Level'], ['formations', 'Formationen'], ['objects', 'Spieler'], ['sprites', 'Sprites'], ['tiles', 'Tiles'], ['palette', 'Paletten'], ['sound', 'Sound']];
+const tabs = [['levels', 'Level'], ['formations', 'Formationen'], ['objects', 'Spieler'], ['sprites', 'Sprites'], ['tiles', 'Pinsel'], ['palette', 'Paletten'], ['sound', 'Sound']];
 for (const [name, label] of tabs) {
   await page.locator('nav button', { hasText: label }).first().click();
   await page.waitForTimeout(500);

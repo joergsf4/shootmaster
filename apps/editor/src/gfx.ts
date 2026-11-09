@@ -1,5 +1,5 @@
 // Zeichenhilfen für Canvas
-import { smsToRgb, type Metatile, type Project } from '@sms/core';
+import { smsToRgb, type Project } from '@sms/core';
 
 export function paletteRgb(pal: number[]): [number, number, number][] {
   return Array.from({ length: 16 }, (_, i) => smsToRgb(pal[i] ?? 0));
@@ -17,27 +17,13 @@ export function pixelsToImage(px: number[], w: number, h: number, pal: [number, 
   return img;
 }
 
-/** Metatile als 16×16-Pixel */
-export function metatilePixels(p: Project, m: Metatile): number[] {
-  const out = new Array(256).fill(0);
-  m.tiles.forEach((ref, q) => {
-    const t = p.tiles[ref.tile] ?? [];
-    const ox = (q & 1) * 8, oy = (q >> 1) * 8;
-    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-      const sx = ref.hflip ? 7 - x : x, sy = ref.vflip ? 7 - y : y;
-      out[(oy + y) * 16 + ox + x] = t[sy * 8 + sx] ?? 0;
-    }
-  });
-  return out;
-}
-
 /** Cache: Metatile-Index → Canvas 16×16 */
 export function metatileCanvases(p: Project): HTMLCanvasElement[] {
   const pal = paletteRgb(p.palettes.bg);
   return p.metatiles.map((m) => {
     const c = document.createElement('canvas');
     c.width = 16; c.height = 16;
-    c.getContext('2d')!.putImageData(pixelsToImage(metatilePixels(p, m), 16, 16, pal), 0, 0);
+    c.getContext('2d')!.putImageData(pixelsToImage(m.pixels, 16, 16, pal), 0, 0);
     return c;
   });
 }

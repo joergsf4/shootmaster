@@ -56,6 +56,18 @@ export function encodeNameEntry(e: NameEntry): [number, number] {
   return [e.tile & 0xff, hi];
 }
 
+export function flipH(px: number[], w = 8, h = 8): number[] {
+  const o: number[] = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.push(px[y * w + (w - 1 - x)]);
+  return o;
+}
+
+export function flipV(px: number[], w = 8, h = 8): number[] {
+  const o: number[] = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.push(px[(h - 1 - y) * w + x]);
+  return o;
+}
+
 /** Ausschnitt aus einem Pixelbild. */
 export function crop(px: number[], w: number, x0: number, y0: number, cw: number, ch: number): number[] {
   const o: number[] = [];

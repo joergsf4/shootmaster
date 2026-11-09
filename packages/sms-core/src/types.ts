@@ -1,14 +1,19 @@
-// Projektmodell (formatVersion 1). Siehe docs/data-format.md
+// Projektmodell (formatVersion 2). Siehe docs/data-format.md
 export type Orientation = 'h' | 'v';
 
 export interface Point { x: number; y: number }
 export interface Hitbox { x: number; y: number; w: number; h: number }
 
-/** Verweis auf ein BG-Tile innerhalb eines Metatiles. */
+/** Verweis auf ein BG-Tile (intern beim Kompilieren, nicht im Projekt gespeichert). */
 export interface TileRef { tile: number; hflip?: boolean; vflip?: boolean; priority?: boolean }
 
-/** 16×16 Metatile aus 4 Tiles: [oben links, oben rechts, unten links, unten rechts]. */
-export interface Metatile { tiles: [TileRef, TileRef, TileRef, TileRef] }
+/** Pinsel: ein eigenständiges 16×16-Bild. Gemeinsame 8×8-Kacheln ermittelt der Compiler selbst. */
+export interface Metatile {
+  /** 256 Pixel (Index in BG-Palette) */
+  pixels: number[];
+  /** liegt vor den Sprites */
+  priority?: boolean;
+}
 
 /** Sprite-Grafik: Breite Vielfaches von 8, Höhe Vielfaches von 16 (8×16-Sprite-Modus). */
 export interface SpriteGfx {
@@ -115,12 +120,10 @@ export interface Sfx {
 }
 
 export interface Project {
-  formatVersion: 1;
+  formatVersion: 2;
   name: string;
   /** SMS-Farbwerte 0..63 (--BBGGRR). */
   palettes: { bg: number[]; sprite: number[] };
-  /** BG-Tiles, je 64 Pixel (Palettenindex 0..15). */
-  tiles: number[][];
   metatiles: Metatile[];
   sprites: SpriteGfx[];
   explosionSpriteId: string;

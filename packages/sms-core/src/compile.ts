@@ -1,10 +1,10 @@
 // Projekt → Binärdaten gemäß docs/data-format.md (Version 1)
-import { encodeNameEntry, encodeTile, crop } from './hw';
+import { encodeNameEntry, encodeTile, crop, flipH, flipV } from './hw';
 import { bakePath, formationMembers } from './path';
 import { periodTable, sfxBytes, songBytes } from './sound';
 import {
   ACROSS, MAX_BG_TILES, MAX_SPRITE_TILES, SCREEN_H, SCREEN_W,
-  type Hitbox, type Metatile, type Project, type SpriteGfx,
+  type Hitbox, type Metatile, type Project, type SpriteGfx, type TileRef,
 } from './types';
 
 export const DATA_VERSION = 2;
@@ -71,6 +71,26 @@ export function layoutSprites(sprites: SpriteGfx[]): SpriteLayout {
   return { tiles, metasprites };
 }
 
+/** Zerlegt die Pinsel in 8×8-Kacheln; gleiche und gespiegelte Kacheln werden geteilt. */
+export function layoutBgTiles(metatiles: Metatile[]): { tiles: number[][]; refs: TileRef[][] } {
+  const tiles: number[][] = [];
+  const index = new Map<string, TileRef>();
+  const refs = metatiles.map((m) => [0, 1, 2, 3].map((q) => {
+    const px = crop(m.pixels, 16, (q & 1) * 8, (q >> 1) * 8, 8, 8);
+    let ref = index.get(px.join(','));
+    if (!ref) {
+      const tile = tiles.length;
+      tiles.push(px);
+      const h = flipH(px);
+      for (const [v, r] of [[px, { tile }], [h, { tile, hflip: true }], [flipV(px), { tile, vflip: true }], [flipV(h), { tile, hflip: true, vflip: true }]] as const)
+        if (!index.has(v.join(','))) index.set(v.join(','), r);
+      ref = { tile };
+    }
+    return { ...ref, priority: m.priority };
+  }));
+  return { tiles, refs };
+}
+
 export interface CompileStats {
   bgTiles: number;
   spriteTiles: number;
@@ -93,7 +113,11 @@ export interface CompileOptions {
 
 export function compileProject(p: Project, opts: CompileOptions = {}): CompiledData {
   if (p.levels.length === 0) throw new CompileError('Projekt hat kein Level');
-  if (p.tiles.length > MAX_BG_TILES) throw new CompileError(`Zu viele BG-Tiles: ${p.tiles.length} > ${MAX_BG_TILES}`);
+  if (p.metatiles.length === 0) throw new CompileError('Projekt hat keinen Pinsel');
+  if (p.metatiles.length > 256) throw new CompileError('Mehr als 256 Pinsel');
+  const bg = layoutBgTiles(p.metatiles);
+  if (bg.tiles.length > MAX_BG_TILES)
+    throw new CompileError(`Die Pinsel enthalten zu viele verschiedene 8×8-Muster: ${bg.tiles.length} > ${MAX_BG_TILES}`);
   const spriteById = new Map(p.sprites.map((s) => [s.id, s]));
   const need = (id: string, what: string) => {
     const s = spriteById.get(id);
@@ -182,7 +206,7 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
 
   // ---------- Bank 2: BG-Tiles ----------
   const tb = new Bank(SLOT1, 'BG-Tiles');
-  const tilesPtr = tb.put(p.tiles.flatMap(encodeTile));
+  const tilesPtr = tb.put(bg.tiles.flatMap(encodeTile));
   const TILE_BANK = 2;
 
   // ---------- Bank 3+: Level ----------
@@ -198,17 +222,16 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     b.put([lv.orientation === 'h' ? 0 : 1, ...w(len), speed]); // 00..03
     b.put(padPalette(p.palettes.bg, false)); // 04..13
     const L_MT = b.reserve(2), L_MAP = b.reserve(2), L_EV = b.reserve(2), L_FORM = b.reserve(2); // 14..1B
-    b.put([TILE_BANK, ...w(tilesPtr), ...w(p.tiles.length)]); // 1C..20
+    b.put([TILE_BANK, ...w(tilesPtr), ...w(bg.tiles.length)]); // 1C..20
     b.put(w(camMax)); // 21
     const startPos = lv.orientation === 'h' ? [32, 88] : [120, 160];
     b.put(startPos); // 23,24
     b.put([songIdx.get(lv.musicId ?? '') ?? 0xff]); // 25
     b.reserve(10);
 
-    // Metatiles
-    const mt: Metatile[] = p.metatiles.length ? p.metatiles : [{ tiles: [{ tile: 0 }, { tile: 0 }, { tile: 0 }, { tile: 0 }] }];
-    if (mt.length > 256) throw new CompileError('Mehr als 256 Metatiles');
-    b.setWord(L_MT, b.put(mt.flatMap((m) => m.tiles.flatMap((t) => encodeNameEntry({ tile: t.tile, hflip: t.hflip, vflip: t.vflip, priority: t.priority })))));
+    // Metatiles (je 4 Name-Table-Einträge)
+    const mt = p.metatiles;
+    b.setWord(L_MT, b.put(bg.refs.flatMap((r) => r.flatMap((t) => encodeNameEntry(t)))));
 
     // Karte
     const map: number[] = [];
@@ -252,7 +275,7 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     global: g.toArray(),
     banks,
     stats: {
-      bgTiles: p.tiles.length,
+      bgTiles: bg.tiles.length,
       spriteTiles: layout.tiles.length,
       levelBytes,
       romSize: 0,

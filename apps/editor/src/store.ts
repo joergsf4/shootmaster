@@ -13,7 +13,7 @@ interface State {
   future: Project[];
   tab: Tab;
   /** Auswahl je Editor */
-  sel: { tile: number; metatile: number; sprite: string; frame: number; formation: string; level: string; enemy: string; song: string; sfx: string };
+  sel: { metatile: number; sprite: string; frame: number; formation: string; level: string; enemy: string; song: string; sfx: string };
   /** Änderung mit Undo-Schritt */
   edit: (fn: (d: Draft<Project>) => void, coalesce?: string) => void;
   undo: () => void;
@@ -47,7 +47,7 @@ export const useStore = create<State>((set, get) => ({
   tab: 'levels',
   saveError: false,
   sel: {
-    tile: 1, metatile: 1, sprite: p0.sprites[0]?.id ?? '', frame: 0,
+    metatile: 1, sprite: p0.sprites[0]?.id ?? '', frame: 0,
     formation: p0.formations[0]?.id ?? '', level: p0.levels[0]?.id ?? '', enemy: p0.enemyTypes[0]?.id ?? '', song: '', sfx: '',
   },
   edit: (fn, coalesce) => {
@@ -76,7 +76,7 @@ export const useStore = create<State>((set, get) => ({
   select: (s) => set({ sel: { ...get().sel, ...s } }),
   load: (p) => set({
     project: p, past: [], future: [],
-    sel: { tile: 0, metatile: 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '', level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '' },
+    sel: { metatile: 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '', level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '' },
   }),
 }));
 

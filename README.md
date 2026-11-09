@@ -10,7 +10,7 @@ Ein webbasierter Editor für **Shoot 'em Ups auf dem Sega Master System**. Grafi
 
 - **Level-Editor:** Level scrollen horizontal oder vertikal. Du malst sie mit Pinsel, Rechteck, Füllen und Pipette aus 16×16-Metatiles. Gegnerwellen setzt du als Marker entlang der Scrollstrecke.
 - **Formationen:** Du zeichnest die Flugbahn per Klick. Gegner fliegen als Kette hintereinander oder als starrer Block, zum Beispiel in V-Form. Dazu gibt es Vorlagen, Spiegeln, eine Vorschau mit Zeitleiste und eine Warnung bei zu vielen Sprites pro Bildzeile.
-- **Sprites und Tiles:** Pixel-Editor, Animationen und Metatiles mit Spiegelung, beschränkt auf die 64 Hardware-Farben der Konsole.
+- **Sprites und Pinsel:** Pixel-Editor und Animationen. Hintergrund-Pinsel sind eigenständige 16×16-Bilder; gleiche und gespiegelte 8×8-Teile legt der Editor automatisch zusammen, damit Speicher gespart wird. Alles ist auf die 64 Hardware-Farben der Konsole beschränkt.
 - **Spieler und Gegner:** Tempo, Schüsse, Leben, Lebenspunkte der Gegner und Trefferzonen (Hitboxen).
 - **Sound:** Musik in einem Noten-Raster (Piano-Roll) mit 3 Tonkanälen und Rauschen, dazu Soundeffekte für Schuss, Explosion und Treffer. Abgespielt wird über den eingebauten Soundchip-Emulator, also so, wie es im Spiel klingt.
 - **Spielen im Browser:** Der eingebaute Master-System-Emulator läuft mit Bild und Ton.

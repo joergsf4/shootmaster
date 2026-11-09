@@ -1,5 +1,5 @@
 // Mitgeliefertes Beispielprojekt (prozedural erzeugte Grafik)
-import type { Formation, Level, Metatile, Project, Sfx, Song, SpriteGfx } from './types';
+import type { Formation, Level, Metatile, Project, Sfx, Song, SpriteGfx, TileRef } from './types';
 
 type Px = number[];
 const img = (w: number, h: number, f: (x: number, y: number) => number): Px => {
@@ -43,9 +43,21 @@ function tiles(): Px[] {
   return t;
 }
 
-const mt = (a: number, b: number, c: number, d: number, flip = false): Metatile => ({
-  tiles: [{ tile: a }, { tile: b, hflip: flip }, { tile: c }, { tile: d, hflip: flip }],
-});
+/** 4 Kachelverweise → 16×16-Pixelbild (auch für alte Projekte im Format 1). */
+function refsToPixels(tiles: number[][], refs: TileRef[]): number[] {
+  const out = new Array(256).fill(0);
+  refs.forEach((ref, q) => {
+    const t = tiles[ref.tile] ?? [];
+    const ox = (q & 1) * 8, oy = (q >> 1) * 8;
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++)
+      out[(oy + y) * 16 + ox + x] = t[(ref.vflip ? 7 - y : y) * 8 + (ref.hflip ? 7 - x : x)] ?? 0;
+  });
+  return out;
+}
+
+const T = tiles();
+const mt = (a: number, b: number, c: number, d: number): Metatile =>
+  ({ pixels: refsToPixels(T, [{ tile: a }, { tile: b }, { tile: c }, { tile: d }]) });
 
 function metatiles(): Metatile[] {
   return [
@@ -213,17 +225,27 @@ function sfx(): Sfx[] {
 
 /** Ergänzt Sound-Felder in Projekten, die vor dem Sound-Editor gespeichert wurden. */
 export function upgradeProject(p: unknown): unknown {
-  const o = p as Partial<Project> | null;
-  if (!o || typeof o !== 'object' || o.songs) return p;
-  return { ...o, songs: songs(), sfx: sfx(), sounds: { shot: 'sfx-shot', explosion: 'sfx-boom', hit: 'sfx-hit' } };
+  let o = p as (Omit<Partial<Project>, 'formatVersion'> & { tiles?: number[][]; formatVersion?: number }) | null;
+  if (!o || typeof o !== 'object') return p;
+  if (!o.songs) o = { ...o, songs: songs(), sfx: sfx(), sounds: { shot: 'sfx-shot', explosion: 'sfx-boom', hit: 'sfx-hit' } };
+  // Format 1 → 2: Pinsel waren Verweise auf gemeinsame Tiles, jetzt eigenständige Bilder
+  if (o.formatVersion === 1 && Array.isArray(o.tiles) && Array.isArray(o.metatiles)) {
+    const tiles = o.tiles;
+    const metatiles = (o.metatiles as unknown as { tiles: TileRef[] }[]).map((m) => ({
+      pixels: refsToPixels(tiles, m.tiles ?? []),
+      priority: m.tiles?.some((t) => t.priority) || undefined,
+    }));
+    const { tiles: _drop, ...rest } = o;
+    o = { ...rest, formatVersion: 2, metatiles };
+  }
+  return o;
 }
 
 export function createDemoProject(): Project {
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     name: 'Demo: Sternenpatrouille',
     palettes: { bg: BG, sprite: SPR },
-    tiles: tiles(),
     metatiles: metatiles(),
     sprites: sprites(),
     explosionSpriteId: 'boom',

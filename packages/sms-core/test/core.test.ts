@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bakePath, buildRom, compileProject, createDemoProject, validateProject, decodeTile, encodeNameEntry, encodeTile, engineBinary, framePositions, rgbToSms, smsToRgb } from '../src/index';
 import { SMS, BTN, PSG } from '../../sms-emu/src/index';
-import { periodTable, upgradeProject } from '../src/index';
+import { layoutBgTiles, periodTable, upgradeProject } from '../src/index';
 
 describe('Hardware-Primitive', () => {
   it('kodiert Tiles planar 4bpp und zurück', () => {
@@ -77,11 +77,12 @@ describe('ROM', () => {
     for (let f = 0; f < 30; f++) sms.runFrame(); // Kamera noch bei 0 bzw. knapp darüber
     const nt = sms.vdp.vram;
     // Tile-Zeile 0 (unten im Bild) liegt in Name-Table-Zeile 27, linkes unteres Viertel des Metatiles
+    const { refs } = layoutBgTiles(p.metatiles);
     for (let c = 0; c < 16; c++) {
-      const mt = p.metatiles[lv.map[c]];
+      const r = refs[lv.map[c]];
       const addr = 0x3800 + 27 * 64 + c * 4;
-      expect(nt[addr]).toBe(mt.tiles[2].tile);
-      expect(nt[addr + 2]).toBe(mt.tiles[3].tile);
+      expect(nt[addr]).toBe(r[2].tile);
+      expect(nt[addr + 2]).toBe(r[3].tile);
     }
   });
 });
@@ -119,10 +120,10 @@ describe('Projektdatei prüfen', () => {
   });
   it.each([
     ['kein Objekt', null],
-    ['falsche Version', { ...createDemoProject(), formatVersion: 2 }],
+    ['falsche Version', { ...createDemoProject(), formatVersion: 99 }],
     ['Level ohne Karte', { ...createDemoProject(), levels: [{ id: 'x' }] }],
     ['fehlende Sprites', { ...createDemoProject(), sprites: undefined }],
-    ['kaputtes Tile', { ...createDemoProject(), tiles: [[1, 2, 3]] }],
+    ['kaputter Pinsel', { ...createDemoProject(), metatiles: [{ pixels: [1, 2, 3] }] }],
   ])('lehnt ab: %s', (_, p) => {
     expect(validateProject(p)).not.toBeNull();
   });
@@ -166,5 +167,39 @@ describe('Sound', () => {
     delete old.songs; delete old.sfx; delete old.sounds;
     expect(validateProject(old)).not.toBeNull();
     expect(validateProject(upgradeProject(old))).toBeNull();
+  });
+});
+
+describe('Pinsel', () => {
+  it('teilt gleiche und gespiegelte 8×8-Kacheln automatisch', () => {
+    const quarter = Array.from({ length: 64 }, (_, i) => (i % 8 < 3 && i < 40 ? 5 : 0)); // in beide Richtungen asymmetrisch
+    const px = new Array(256).fill(0);
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+      px[y * 16 + x] = quarter[y * 8 + x];            // oben links: Original
+      px[y * 16 + 8 + x] = quarter[y * 8 + 7 - x];    // oben rechts: gespiegelt
+      px[(8 + y) * 16 + x] = quarter[(7 - y) * 8 + x]; // unten links: vertikal gespiegelt
+      px[(8 + y) * 16 + 8 + x] = 0;                   // unten rechts: leer
+    }
+    const { tiles, refs } = layoutBgTiles([{ pixels: px }]);
+    expect(tiles).toHaveLength(2);
+    expect(refs[0][1]).toEqual({ tile: 0, hflip: true, priority: undefined });
+    expect(refs[0][2]).toEqual({ tile: 0, vflip: true, priority: undefined });
+  });
+  it('Pinsel ändern sich nicht gegenseitig (eigene Pixel je Pinsel)', () => {
+    const p = createDemoProject();
+    p.metatiles[0].pixels[0] = 7;
+    expect(p.metatiles.slice(1).every((m) => m !== p.metatiles[0])).toBe(true);
+    expect(validateProject(p)).toBeNull();
+  });
+  it('wandelt Projekte im alten Kachel-Format (1) bildgleich um', () => {
+    const tile = Array.from({ length: 64 }, (_, i) => i % 16);
+    const old = { ...JSON.parse(JSON.stringify(createDemoProject())), formatVersion: 1, tiles: [tile],
+      metatiles: [{ tiles: [{ tile: 0 }, { tile: 0, hflip: true }, { tile: 0 }, { tile: 0, priority: true }] }] };
+    const up = upgradeProject(old) as ReturnType<typeof createDemoProject>;
+    expect(validateProject(up)).toBeNull();
+    expect('tiles' in up).toBe(false);
+    expect(up.metatiles[0].pixels[0]).toBe(tile[0]);
+    expect(up.metatiles[0].pixels[8]).toBe(tile[7]); // gespiegelt
+    expect(up.metatiles[0].priority).toBe(true);
   });
 });

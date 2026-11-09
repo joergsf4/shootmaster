@@ -115,7 +115,7 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
   const [hover, setHover] = useState<{ along: number; across: number } | null>(null);
   const [rect, setRect] = useState<{ a0: number; c0: number; a1: number; c1: number } | null>(null);
   const drag = useRef<{ mode: 'paint' | 'event'; value: number; stroke: string; ev?: number } | null>(null);
-  const mts = useMemo(() => metatileCanvases(p), [p.metatiles, p.tiles, p.palettes.bg]);
+  const mts = useMemo(() => metatileCanvases(p), [p.metatiles, p.palettes.bg]);
   const H = lv.orientation === 'h';
   const across = ACROSS[lv.orientation];
   const worldW = H ? lv.length * 16 : 256, worldH = H ? 192 : lv.length * 16;

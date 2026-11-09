@@ -17,7 +17,7 @@ const TABS: [Tab, string][] = [
   ['formations', '〰 Formationen'],
   ['objects', '🚀 Spieler & Gegner'],
   ['sprites', '👾 Sprites'],
-  ['tiles', '▦ Tiles'],
+  ['tiles', '▦ Pinsel'],
   ['palette', '🎨 Paletten'],
   ['sound', '🎵 Sound'],
 ];
@@ -92,7 +92,7 @@ export function App() {
         <span className="grow" />
         {st && (
           <span className="stats">
-            <Budget label="BG-Tiles" used={st.bgTiles} max={MAX_BG_TILES} />
+            <Budget label="Kacheln" used={st.bgTiles} max={MAX_BG_TILES} />
             <Budget label="Sprite-Tiles" used={st.spriteTiles} max={MAX_SPRITE_TILES} />
             <span className="budget">ROM {st.romSize / 1024} KB</span>
           </span>
