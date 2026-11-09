@@ -203,3 +203,20 @@ describe('Pinsel', () => {
     expect(up.metatiles[0].priority).toBe(true);
   });
 });
+
+describe('Hintergrund-Kollision', () => {
+  // Spieler fliegt ohne Gegner in den Boden (horizontal) bzw. die Seitenwand (vertikal)
+  const livesAfter = (levelIndex: number, dir: number, solid: boolean) => {
+    const p = createDemoProject();
+    p.levels = [p.levels[levelIndex]];
+    p.levels[0].events = [];
+    if (!solid) p.metatiles.forEach((m) => { m.solid = false; });
+    const sms = new SMS(buildRom(engineBinary(), p).rom);
+    for (let f = 0; f < 200; f++) { sms.buttons = dir; sms.runFrame(); } // < 3 Treffer, sonst Neustart mit vollen Leben
+    return sms.ram[0x1e];
+  };
+  it.each([[0, BTN.down, 'horizontal: Boden'], [1, BTN.left, 'vertikal: Metallwand']])('Level %i – %s kostet ein Leben, nur wenn „tödlich“', (lv, dir) => {
+    expect(livesAfter(lv as number, dir as number, true)).toBeLessThan(3);
+    expect(livesAfter(lv as number, dir as number, false)).toBe(3);
+  });
+});

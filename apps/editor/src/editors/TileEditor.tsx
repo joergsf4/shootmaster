@@ -45,6 +45,11 @@ export function TileEditor() {
               <input type="checkbox" checked={!!m.priority} onChange={(e) => edit((d) => { d.metatiles[i].priority = e.target.checked || undefined; })} />
               Vor Sprites (Priorität)
             </label>
+            <label className="check">
+              <input type="checkbox" checked={!!m.solid} onChange={(e) => edit((d) => { d.metatiles[i].solid = e.target.checked || undefined; })} />
+              Tödlich bei Berührung
+            </label>
+            <span className="hint">Spieler verliert ein Leben, Schüsse verschwinden. Im Level rot umrandet.</span>
           </div>
           <div className="row">
             <PixelEditor pixels={m.pixels} width={16} height={16} palette={p.palettes.bg}
@@ -76,7 +81,7 @@ export function MetatileList({ selected, onSelect }: { selected: number; onSelec
   return (
     <div className="mt-list">
       {canv.map((c, i) => (
-        <canvas key={i} width={32} height={32} className={i === selected ? 'sel' : ''} title={`Pinsel ${i}`}
+        <canvas key={i} width={32} height={32} className={`${i === selected ? 'sel' : ''} ${p.metatiles[i].solid ? 'solid' : ''}`} title={`Pinsel ${i}${p.metatiles[i].solid ? ' – tödlich' : ''}`}
           ref={(el) => { if (el) { const x = el.getContext('2d')!; x.imageSmoothingEnabled = false; x.drawImage(c, 0, 0, 32, 32); } }}
           onClick={() => onSelect(i)} />
       ))}

@@ -1,6 +1,6 @@
 # Datenvertrag Engine ↔ Editor
 
-**Formatversion:** 2 · Engine: [engine/src/main.asm](../engine/src/main.asm) · Compiler: [packages/sms-core/src/compile.ts](../packages/sms-core/src/compile.ts)
+**Formatversion:** 3 · Engine: [engine/src/main.asm](../engine/src/main.asm) · Compiler: [packages/sms-core/src/compile.ts](../packages/sms-core/src/compile.ts)
 
 Alle Mehrbyte-Werte sind Little Endian. Alle Zeiger sind CPU-Adressen in dem Slot, in den die jeweilige Bank eingeblendet ist.
 
@@ -20,7 +20,7 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 | Offset | Größe | Inhalt |
 |---|---|---|
 | 00 | 4 | Magic `SHMP` |
-| 04 | 1 | Formatversion (= 2; die Engine zeigt bei Abweichung einen roten Bildschirm) |
+| 04 | 1 | Formatversion (= 3; die Engine zeigt bei Abweichung einen roten Bildschirm) |
 | 05 | 1 | Anzahl Level |
 | 08 | 16 | Sprite-Palette (Farbe 0 = Backdrop/transparent, wird auf Schwarz gesetzt) |
 | 18 | 2 | Anzahl Sprite-Tiles (max. 192, VRAM ab Tile 256 / `$2000`) |
@@ -76,6 +76,7 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 | 21 | 2 | maximale Kameraposition (Level-Ende) |
 | 23, 24 | 1+1 | Startposition des Spielers x, y |
 | 25 | 1 | Songindex der Levelmusik ($FF = Stille) |
+| 26 | 2 | → Kollisionstabelle: 1 Byte je Pinsel (1 = tödlich: Spieler verliert ein Leben, Schüsse verschwinden) |
 
 ### Karte
 Ein Byte (Metatile-Index) pro Zelle.
@@ -109,5 +110,6 @@ Schrittbyte: `0` halten · `1` aus · `n ≥ 2` Note `n-2` (Ton: Index in Period
 - VRAM: BG-Tiles 0–255, Sprite-Tiles 256–447, Name Table `$3800`, SAT `$3F00`
 
 ## Changelog
+- v3: Hintergrund-Kollision (tödliche Pinsel)
 - v2: Sound – Songs, Effekte, Periodentabelle, Soundtest-Byte, Levelmusik
 - v1: erste Version (Scrolling H/V, Formationen mit Pfaden, Spieler, Schüsse, Kollision, Explosionen, Level-Abfolge)

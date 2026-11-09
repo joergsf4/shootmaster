@@ -80,6 +80,7 @@ L_CAMMAX    equ $4021
 L_STARTX    equ $4023
 L_STARTY    equ $4024
 L_MUSIC     equ $4025
+L_SOLID     equ $4026
 
 ; ---- Objektstruktur (16 Byte) ----
 O_STATE     equ 0      ; 0 frei, 1 wartet, 2 aktiv, 3 explodiert
@@ -130,6 +131,7 @@ tmpBank     equ $C027
 tmpPtr      equ $C028
 tmpCount    equ $C02A
 endTimer    equ $C02C
+solidBase   equ $C02E      ; Tabelle: tödlich je Pinsel
 hbX         equ $C030
 hbY         equ $C031
 hbW         equ $C032
@@ -207,7 +209,7 @@ init:
     cp 'S'
     jp nz,fatal
     ld a,(G_VERSION)
-    cp 2
+    cp 3
     jp nz,fatal
     ; VRAM löschen
     ld hl,$0000
@@ -308,6 +310,8 @@ startLevel:
     ld (evPtr),hl
     ld hl,(L_CAMMAX)
     ld (camMax),hl
+    ld hl,(L_SOLID)
+    ld (solidBase),hl
     ld a,(L_SPEED)
     ld b,a
     rrca
@@ -445,6 +449,7 @@ mainLoop:
     call updateShots
     call updateEnemies
     call collide
+    call bgCollide
     call checkLevelEnd
     call buildSat
     ld hl,frame
@@ -1345,6 +1350,163 @@ coNext:
     pop bc
     dec b
     jp nz,coLoop
+    ret
+
+; ---------------------------------------------------------------------
+; Kollision mit dem Hintergrund (Pinsel mit „tödlich“)
+; ---------------------------------------------------------------------
+; B = Bildschirm-X, C = Bildschirm-Y → Carry, wenn dort ein tödlicher Pinsel liegt
+solidAt:
+    ld a,c
+    cp 192
+    jp nc,saNo
+    ld a,(orient)
+    or a
+    jr nz,saV
+    ld hl,(camPos)          ; horizontal: Spalte = (Kamera + x) / 16
+    ld e,b
+    ld d,0
+    add hl,de
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    ld de,(levelLen)
+    push hl
+    or a
+    sbc hl,de
+    pop hl
+    jr nc,saNo
+    add hl,hl
+    add hl,hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de               ; Spalte * 12
+    ld a,c
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F                 ; + y / 16
+    ld e,a
+    ld d,0
+    add hl,de
+    jr saLook
+saV:
+    ld a,191                ; vertikal: Zeile = (Kamera + 191 - y) / 16
+    sub c
+    ld e,a
+    ld d,0
+    ld hl,(camPos)
+    add hl,de
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    ld de,(levelLen)
+    push hl
+    or a
+    sbc hl,de
+    pop hl
+    jr nc,saNo
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl               ; Zeile * 16
+    ld a,b
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F                 ; + x / 16
+    ld e,a
+    ld d,0
+    add hl,de
+saLook:
+    ld de,(mapBase)
+    add hl,de
+    ld l,(hl)
+    ld h,0
+    ld de,(solidBase)
+    add hl,de
+    ld a,(hl)
+    or a
+    ret z
+    scf
+    ret
+saNo:
+    or a
+    ret
+
+bgCollide:
+    ld iy,(G_PLAYER)
+    ld a,(player+O_TIMER)   ; unverwundbar → kein Treffer
+    or a
+    jr nz,bcShots
+    ld a,(player+O_X)       ; 4 Ecken der Spieler-Hitbox prüfen
+    add a,(iy+P_HBX)
+    ld b,a
+    ld a,(player+O_Y)
+    add a,(iy+P_HBY)
+    ld c,a
+    call solidAt
+    jr c,bcHit
+    ld a,b
+    add a,(iy+P_HBW)
+    dec a
+    ld b,a
+    call solidAt
+    jr c,bcHit
+    ld a,c
+    add a,(iy+P_HBH)
+    dec a
+    ld c,a
+    call solidAt
+    jr c,bcHit
+    ld a,b
+    sub (iy+P_HBW)
+    inc a
+    ld b,a
+    call solidAt
+    jr nc,bcShots
+bcHit:
+    call playerHit
+bcShots:
+    ld ix,shots             ; Schüsse verschwinden in tödlichen Pinseln (Mitte der Hitbox)
+    ld a,MAXS
+bcLoop:
+    push af
+    ld a,(ix+O_STATE)
+    or a
+    jr z,bcNext
+    ld a,(iy+P_SHBW)
+    srl a
+    add a,(iy+P_SHBX)
+    add a,(ix+O_X)
+    ld b,a
+    ld a,(iy+P_SHBH)
+    srl a
+    add a,(iy+P_SHBY)
+    add a,(ix+O_Y)
+    ld c,a
+    call solidAt
+    jr nc,bcNext
+    ld (ix+O_STATE),0
+bcNext:
+    ld de,OBJ
+    add ix,de
+    pop af
+    dec a
+    jr nz,bcLoop
     ret
 
 playerHit:

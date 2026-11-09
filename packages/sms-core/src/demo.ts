@@ -64,10 +64,10 @@ function metatiles(): Metatile[] {
     mt(0, 0, 0, 0), // 0 Weltraum
     mt(1, 0, 0, 2), // 1 Sterne
     mt(0, 2, 3, 0), // 2 Sterne
-    mt(4, 4, 5, 5), // 3 Boden-Oberkante
-    mt(5, 6, 6, 5), // 4 Boden
-    mt(7, 8, 9, 10), // 5 Asteroid
-    mt(11, 12, 12, 11), // 6 Metall
+    { ...mt(4, 4, 5, 5), solid: true }, // 3 Boden-Oberkante
+    { ...mt(5, 6, 6, 5), solid: true }, // 4 Boden
+    { ...mt(7, 8, 9, 10), solid: true }, // 5 Asteroid
+    { ...mt(11, 12, 12, 11), solid: true }, // 6 Metall
     mt(13, 0, 0, 13), // 7 Nebel
   ];
 }

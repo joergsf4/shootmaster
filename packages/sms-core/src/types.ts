@@ -13,6 +13,8 @@ export interface Metatile {
   pixels: number[];
   /** liegt vor den Sprites */
   priority?: boolean;
+  /** Berührung kostet den Spieler ein Leben, Schüsse verschwinden */
+  solid?: boolean;
 }
 
 /** Sprite-Grafik: Breite Vielfaches von 8, Höhe Vielfaches von 16 (8×16-Sprite-Modus). */

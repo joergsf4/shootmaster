@@ -48,7 +48,7 @@ await page.waitForTimeout(300);
 await page.screenshot({ path: `${out}/levels-event.png` });
 
 // Vertikales Level
-await page.locator('button', { hasText: 'Pinsel' }).first().click();
+await page.locator('[data-tour="brush"]').click();
 await page.locator('.list li', { hasText: 'Asteroidenfeld' }).click();
 await page.waitForTimeout(400);
 await page.screenshot({ path: `${out}/levels-v.png` });

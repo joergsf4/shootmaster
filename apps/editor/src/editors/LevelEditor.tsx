@@ -168,6 +168,7 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
       const m = lv.map[c.along * across + c.across] ?? 0;
       const img = mts[m] ?? mts[0];
       if (img) ctx.drawImage(img, cx * 16, cy * 16);
+      if (p.metatiles[m]?.solid) { ctx.strokeStyle = 'rgba(255,60,60,0.7)'; ctx.lineWidth = 1 / zoom; ctx.strokeRect(cx * 16 + 0.5 / zoom, cy * 16 + 0.5 / zoom, 16 - 1 / zoom, 16 - 1 / zoom); }
     }
     if (showGrid) {
       ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1 / zoom; ctx.beginPath();

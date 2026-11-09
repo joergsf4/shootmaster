@@ -7,7 +7,7 @@ import {
   type Hitbox, type Metatile, type Project, type SpriteGfx, type TileRef,
 } from './types';
 
-export const DATA_VERSION = 2;
+export const DATA_VERSION = 3;
 export const BANK_SIZE = 0x4000;
 export const SLOT1 = 0x4000;
 export const SLOT2 = 0x8000;
@@ -227,10 +227,12 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     const startPos = lv.orientation === 'h' ? [32, 88] : [120, 160];
     b.put(startPos); // 23,24
     b.put([songIdx.get(lv.musicId ?? '') ?? 0xff]); // 25
-    b.reserve(10);
+    const L_SOLID = b.reserve(2); // 26 → je Pinsel 1 = tödlich
+    b.reserve(8);
 
     // Metatiles (je 4 Name-Table-Einträge)
     const mt = p.metatiles;
+    b.setWord(L_SOLID, b.put(mt.map((m) => (m.solid ? 1 : 0))));
     b.setWord(L_MT, b.put(bg.refs.flatMap((r) => r.flatMap((t) => encodeNameEntry(t)))));
 
     // Karte

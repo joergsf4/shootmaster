@@ -125,12 +125,17 @@ export function PixelEditor({ pixels, width, height, palette, transparent0, cell
           </button>
         ))}
         <span className="sep" />
-        <button onClick={() => onChange(flipH(pixels, width, height))}>⇋ H</button>
-        <button onClick={() => onChange(flipV(pixels, width, height))}>⇵ V</button>
-        <button onClick={() => onChange(shift(pixels, width, height, -1, 0))}>←</button>
-        <button onClick={() => onChange(shift(pixels, width, height, 1, 0))}>→</button>
-        <button onClick={() => onChange(shift(pixels, width, height, 0, -1))}>↑</button>
-        <button onClick={() => onChange(shift(pixels, width, height, 0, 1))}>↓</button>
+        <button title="Links und rechts vertauschen" onClick={() => onChange(flipH(pixels, width, height))}>⇋ Spiegeln</button>
+        <button title="Oben und unten vertauschen" onClick={() => onChange(flipV(pixels, width, height))}>⇵ Spiegeln</button>
+        {width === height && <>
+          <button title="Um 90° gegen den Uhrzeigersinn drehen" onClick={() => onChange(rotate(pixels, width, false))}>↺ Drehen</button>
+          <button title="Um 90° im Uhrzeigersinn drehen" onClick={() => onChange(rotate(pixels, width, true))}>↻ Drehen</button>
+        </>}
+        <span className="hint">Verschieben:</span>
+        <button title="Bild 1 Pixel nach links schieben (läuft rechts wieder herein)" onClick={() => onChange(shift(pixels, width, height, -1, 0))}>←</button>
+        <button title="Bild 1 Pixel nach rechts schieben" onClick={() => onChange(shift(pixels, width, height, 1, 0))}>→</button>
+        <button title="Bild 1 Pixel nach oben schieben" onClick={() => onChange(shift(pixels, width, height, 0, -1))}>↑</button>
+        <button title="Bild 1 Pixel nach unten schieben" onClick={() => onChange(shift(pixels, width, height, 0, 1))}>↓</button>
         <button onClick={() => onChange(new Array(width * height).fill(0))}>Leeren</button>
       </div>
       <div className="row">
@@ -151,6 +156,12 @@ export function PixelEditor({ pixels, width, height, palette, transparent0, cell
   );
 }
 
+/** Quadratisches Bild um 90° drehen */
+function rotate(px: number[], n: number, clockwise: boolean) {
+  const o: number[] = [];
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) o.push(clockwise ? px[(n - 1 - x) * n + y] : px[x * n + (n - 1 - y)]);
+  return o;
+}
 function shift(px: number[], w: number, h: number, dx: number, dy: number) {
   const o: number[] = [];
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) o.push(px[((y - dy + h) % h) * w + ((x - dx + w) % w)]);
