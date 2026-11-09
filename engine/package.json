@@ -1,0 +1,11 @@
+{
+  "name": "@sms/engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "z80-asm": "^2.3.0"
+  }
+}

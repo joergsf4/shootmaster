@@ -1,0 +1,20 @@
+{
+  "name": "sms-shoo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:engine": "pnpm --filter @sms/engine build",
+    "dev": "pnpm --filter @sms/editor dev",
+    "test": "vitest run",
+    "shots": "tsx tools/run-rom.ts tmp-shots",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "playwright-core": "^1.65.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "6.3.5",
+    "vitest": "^3.2.4"
+  }
+}
