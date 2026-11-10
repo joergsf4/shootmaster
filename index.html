@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111622">
+  <title>SHOOTMASTER — Build your own 8-bit shooter</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e9f1ef;
+      --muted: #91a1a1;
+      --panel: #1b2230;
+      --panel-deep: #141a25;
+      --line: #303a4b;
+      --mint: #78f0bd;
+      --pink: #ff6b8b;
+      --yellow: #f9d66b;
+      font-family: "Trebuchet MS", "Arial", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 75% -10%, #27324a 0, transparent 38rem),
+        #111622;
+    }
+
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+
+    .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 76px;
+      border-bottom: 1px solid #293142;
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      color: #101721;
+      background: var(--mint);
+      box-shadow: 4px 4px 0 #396a63;
+      font-size: 19px;
+      font-weight: 900;
+    }
+    .brand-name { font-size: 15px; font-weight: 900; letter-spacing: .16em; }
+    .brand-name span { color: var(--mint); }
+    .header-note { color: var(--muted); font-size: 12px; letter-spacing: .13em; text-transform: uppercase; }
+
+    main { padding: 46px 0 56px; }
+    .intro { margin-bottom: 28px; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--mint);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .19em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(32px, 5vw, 52px); line-height: 1.05; letter-spacing: -.04em; }
+    .intro-copy { max-width: 620px; margin: 12px 0 0; color: #a7b3b5; font-size: 15px; line-height: 1.6; }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) minmax(280px, .75fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel);
+      box-shadow: 0 14px 40px #080b1266;
+    }
+    .panel-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 51px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #202838;
+    }
+    .panel-heading h2 { margin: 0; font-size: 12px; letter-spacing: .13em; text-transform: uppercase; }
+    .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px #78f0bd88; }
+
+    .game-area { padding: 18px; }
+    .game-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .game-title { overflow: hidden; margin: 0; font-size: 16px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .game-badge { flex: 0 0 auto; padding: 5px 8px; border: 1px solid #4a4650; border-radius: 3px; color: var(--yellow); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+    .screen-frame { padding: 6px; border: 1px solid #485263; border-radius: 4px; background: #090d16; }
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 4 / 3;
+      background: #080e20;
+      image-rendering: pixelated;
+      touch-action: none;
+    }
+    .game-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .button {
+      min-height: 42px;
+      padding: 0 15px;
+      border: 1px solid #455267;
+      border-radius: 4px;
+      background: #273143;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      transition: transform .12s, background .12s, border-color .12s;
+    }
+    .button:hover { border-color: #70849a; background: #303d53; }
+    .button:active { transform: translateY(1px); }
+    .button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+    .button-primary { flex: 1; border-color: var(--mint); color: #0c211d; background: var(--mint); }
+    .button-primary:hover { border-color: #a5ffda; background: #a5ffda; }
+    .button-secondary { color: #bdc9ce; }
+    .controls-note { margin: 12px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+    kbd {
+      padding: 2px 5px;
+      border: 1px solid #4a5667;
+      border-radius: 3px;
+      color: #dce5e4;
+      background: #242d3c;
+      font-family: inherit;
+      font-size: 10px;
+    }
+
+    .editor { padding-bottom: 17px; }
+    .editor-content { display: grid; gap: 17px; padding: 18px; }
+    .field { display: grid; gap: 8px; }
+    .field-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .field label, .field-label { color: #d7e0df; font-size: 12px; font-weight: 700; }
+    .field-value { color: var(--mint); font-size: 11px; font-weight: 800; }
+    input[type="text"], select {
+      width: 100%;
+      min-height: 39px;
+      padding: 0 10px;
+      border: 1px solid #424e60;
+      border-radius: 4px;
+      color: var(--ink);
+      background: var(--panel-deep);
+    }
+    input[type="range"] { width: 100%; margin: 5px 0 0; accent-color: var(--mint); cursor: pointer; }
+    .color-options { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .swatch {
+      position: relative;
+      width: 100%;
+      height: 33px;
+      border: 2px solid transparent;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .swatch[aria-pressed="true"] { border-color: white; box-shadow: 0 0 0 2px var(--mint); }
+    .swatch:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+    .editor-tip {
+      margin: 0 18px;
+      padding: 12px;
+      border: 1px solid #344d50;
+      border-radius: 4px;
+      color: #aab9ba;
+      background: #192b31;
+      font-size: 11px;
+      line-height: 1.55;
+    }
+    .editor-tip strong { color: var(--mint); }
+
+    footer { display: flex; justify-content: space-between; gap: 15px; padding-top: 18px; color: #75828c; font-size: 10px; letter-spacing: .08em; }
+    .pixel-separator { color: #526170; }
+
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 28px, 560px); }
+      header { min-height: 65px; }
+      .header-note { font-size: 9px; }
+      main { padding-top: 32px; }
+      .workspace { grid-template-columns: 1fr; }
+      .editor { grid-row: 1; }
+      .editor-content { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+      .field:first-child, .field:nth-child(2) { grid-column: span 2; }
+      .editor-tip { margin-bottom: 0; }
+      .color-options { grid-template-columns: repeat(5, 1fr); }
+      .game-area { padding: 13px; }
+    }
+    @media (max-width: 420px) {
+      .shell { width: calc(100% - 22px); }
+      .header-note { display: none; }
+      .editor-content { grid-template-columns: 1fr; }
+      .field:first-child, .field:nth-child(2) { grid-column: auto; }
+      footer { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand" aria-label="Shootmaster home">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div class="brand-name">SHOOT<span>MASTER</span></div>
+      </div>
+      <div class="header-note">8-bit arcade workshop <span class="pixel-separator">◆</span> v1.0</div>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Your arcade. Your rules.</p>
+        <h1 id="page-title">Build your own shooter.</h1>
+        <p class="intro-copy">Tune your ship, set the pace, and take on the wave. A little 8-bit inspiration for your browser—no cartridges required.</p>
+      </section>
+
+      <div class="workspace">
+        <section class="panel" aria-labelledby="preview-heading">
+          <div class="panel-heading">
+            <h2 id="preview-heading">Game preview</h2>
+            <div class="status"><span class="status-dot" aria-hidden="true"></span><span id="status-text">READY TO PLAY</span></div>
+          </div>
+          <div class="game-area">
+            <div class="game-title-row">
+              <h3 class="game-title" id="preview-title">STAR RUNNER</h3>
+              <span class="game-badge">SMS MODE</span>
+            </div>
+            <div class="screen-frame">
+              <canvas id="game" width="512" height="384" aria-label="Space shooter game. Use arrow keys or A and D to move, and space to fire."></canvas>
+            </div>
+            <div class="game-actions">
+              <button class="button button-primary" id="play-button" type="button">▶ &nbsp; Start game</button>
+              <button class="button button-secondary" id="reset-button" type="button">Reset</button>
+            </div>
+            <p class="controls-note"><kbd>←</kbd> <kbd>→</kbd> / <kbd>A</kbd> <kbd>D</kbd> move <span class="pixel-separator">·</span> <kbd>SPACE</kbd> fire <span class="pixel-separator">·</span> <kbd>R</kbd> restart</p>
+          </div>
+        </section>
+
+        <section class="panel editor" aria-labelledby="editor-heading">
+          <div class="panel-heading">
+            <h2 id="editor-heading">Make it yours</h2>
+            <span class="status">LIVE EDITOR</span>
+          </div>
+          <div class="editor-content">
+            <div class="field">
+              <label for="game-name">Game title</label>
+              <input id="game-name" type="text" maxlength="24" value="STAR RUNNER" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="ship-style">Your ship</label>
+              <select id="ship-style">
+                <option value="arrow">Interceptor</option>
+                <option value="delta">Delta wing</option>
+                <option value="scout">Star scout</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-top"><span class="field-label">Ship color</span><span class="field-value" id="color-name">Mint</span></div>
+              <div class="color-options" role="group" aria-label="Choose ship color">
+                <button class="swatch" type="button" aria-label="Mint" aria-pressed="true" data-color="#78f0bd" style="background:#78f0bd"></button>
+                <button class="swatch" type="button" aria-label="Sky" aria-pressed="false" data-color="#74c9ff" style="background:#74c9ff"></button>
+                <button class="swatch" type="button" aria-label="Gold" aria-pressed="false" data-color="#f9d66b" style="background:#f9d66b"></button>
+                <button class="swatch" type="button" aria-label="Coral" aria-pressed="false" data-color="#ff7895" style="background:#ff7895"></button>
+                <button class="swatch" type="button" aria-label="Lilac" aria-pressed="false" data-color="#c59aff" style="background:#c59aff"></button>
+              </div>
+            </div>
+            <div class="field">
+              <div class="field-top"><label for="enemy-count">Enemy squad</label><span class="field-value" id="enemy-value">8 ships</span></div>
+              <input id="enemy-count" type="range" min="4" max="16" value="8">
+            </div>
+            <div class="field">
+              <div class="field-top"><label for="game-speed">Game speed</label><span class="field-value" id="speed-value">Normal</span></div>
+              <input id="game-speed" type="range" min="1" max="3" value="2">
+            </div>
+          </div>
+          <p class="editor-tip"><strong>READY, PILOT?</strong> Your changes show up in the preview right away. Hit start when your setup feels right.</p>
+        </section>
+      </div>
+      <footer>
+        <span>DESIGNED FOR THE LOVE OF 8-BIT</span>
+        <span>MOVE · DODGE · SHOOT · REPEAT</span>
+      </footer>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const titleInput = document.getElementById("game-name");
+      const titleDisplay = document.getElementById("preview-title");
+      const styleInput = document.getElementById("ship-style");
+      const countInput = document.getElementById("enemy-count");
+      const speedInput = document.getElementById("game-speed");
+      const statusText = document.getElementById("status-text");
+      const playButton = document.getElementById("play-button");
+      const keys = new Set();
+      const colors = { "#78f0bd": "Mint", "#74c9ff": "Sky", "#f9d66b": "Gold", "#ff7895": "Coral", "#c59aff": "Lilac" };
+      const speedNames = { 1: "Chill", 2: "Normal", 3: "Turbo" };
+      const stars = Array.from({ length: 60 }, (_, i) => ({
+        x: (i * 83 + 17) % canvas.width,
+        y: (i * 47 + 23) % canvas.height,
+        size: i % 8 === 0 ? 2 : 1,
+        drift: .25 + (i % 5) * .12
+      }));
+      let config = { title: "STAR RUNNER", ship: "arrow", color: "#78f0bd", enemies: 8, speed: 2 };
+      let player, enemies = [], bullets = [], enemyBullets = [], score, lives, active = false, lastTime, frame;
+
+      function newGame() {
+        player = { x: canvas.width / 2, y: canvas.height - 42, width: 18, height: 20, cooldown: 0, invulnerable: 0 };
+        enemies = [];
+        bullets = [];
+        enemyBullets = [];
+        score = 0;
+        lives = 3;
+        active = true;
+        lastTime = 0;
+        frame = 0;
+        const cols = Math.min(config.enemies, 8);
+        const rows = Math.ceil(config.enemies / cols);
+        for (let i = 0; i < config.enemies; i++) {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          enemies.push({ x: 45 + col * (canvas.width - 90) / Math.max(1, cols - 1), y: 58 + row * 34, homeY: 58 + row * 34, phase: i * .8, alive: true });
+        }
+        statusText.textContent = "IN THE FIGHT";
+        playButton.innerHTML = "Ⅱ &nbsp; Pause game";
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function resetGame() {
+        active = false;
+        keys.clear();
+        player = { x: canvas.width / 2, y: canvas.height - 42, width: 18, height: 20, cooldown: 0, invulnerable: 0 };
+        enemies = [];
+        bullets = [];
+        enemyBullets = [];
+        score = 0;
+        lives = 3;
+        statusText.textContent = "READY TO PLAY";
+        playButton.innerHTML = "▶ &nbsp; Start game";
+        draw();
+      }
+
+      function updateConfig() {
+        config.title = titleInput.value.trim() || "UNTITLED SHOOTER";
+        config.ship = styleInput.value;
+        config.enemies = Number(countInput.value);
+        config.speed = Number(speedInput.value);
+        titleDisplay.textContent = config.title;
+        document.getElementById("enemy-value").textContent = `${config.enemies} ships`;
+        document.getElementById("speed-value").textContent = speedNames[config.speed];
+        if (!active) draw();
+      }
+
+      function rect(x, y, w, h, color) {
+        ctx.fillStyle = color;
+        ctx.fillRect(Math.round(x), Math.round(y), w, h);
+      }
+
+      function drawShip(x, y, color, style, scale = 1) {
+        const p = (dx, dy, w, h, c = color) => rect(x + dx * scale, y + dy * scale, w * scale, h * scale, c);
+        const dark = "#213447";
+        if (style === "delta") {
+          p(8, 0, 2, 4); p(7, 4, 4, 4); p(6, 8, 6, 4); p(5, 12, 8, 4); p(3, 16, 12, 3);
+          p(0, 15, 3, 3); p(15, 15, 3, 3); p(7, 7, 4, 7, dark); p(8, 8, 2, 4, "#e5f7ff");
+        } else if (style === "scout") {
+          p(8, 0, 2, 5); p(6, 5, 6, 3); p(7, 8, 4, 6); p(4, 10, 3, 3); p(11, 10, 3, 3);
+          p(2, 13, 4, 3); p(12, 13, 4, 3); p(7, 14, 4, 4); p(8, 7, 2, 5, dark); p(8, 8, 2, 2, "#e5f7ff");
+        } else {
+          p(8, 0, 2, 5); p(7, 5, 4, 5); p(5, 10, 8, 4); p(2, 14, 4, 4); p(12, 14, 4, 4);
+          p(7, 14, 4, 5); p(8, 7, 2, 5, dark); p(8, 8, 2, 2, "#e5f7ff");
+        }
+      }
+
+      function drawEnemy(x, y, type = 0) {
+        const c = type % 2 ? "#ff8c70" : "#f26e91";
+        rect(x - 8, y, 16, 3, c);
+        rect(x - 11, y + 3, 22, 4, c);
+        rect(x - 8, y + 7, 4, 4, "#692f63");
+        rect(x + 4, y + 7, 4, 4, "#692f63");
+        rect(x - 13, y + 11, 4, 4, c);
+        rect(x + 9, y + 11, 4, 4, c);
+        rect(x - 7, y + 8, 3, 3, "#f9d66b");
+        rect(x + 4, y + 8, 3, 3, "#f9d66b");
+      }
+
+      function draw() {
+        ctx.fillStyle = "#080e20";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        stars.forEach(star => {
+          rect(star.x, star.y, star.size, star.size, star.size > 1 ? "#7996bd" : "#455b7c");
+          if (active) {
+            star.y += star.drift * config.speed;
+            if (star.y > canvas.height) { star.y = 0; star.x = Math.random() * canvas.width; }
+          }
+        });
+        rect(0, 26, canvas.width, 1, "#263650");
+        rect(0, canvas.height - 18, canvas.width, 1, "#263650");
+        ctx.font = "bold 11px monospace";
+        ctx.fillStyle = "#a9bad1";
+        ctx.fillText(`SCORE ${String(score || 0).padStart(5, "0")}`, 16, 17);
+        ctx.fillStyle = "#f26e91";
+        ctx.fillText(`♥ ${lives ?? 3}`, canvas.width - 55, 17);
+        if (enemies.length) {
+          enemies.forEach((enemy, i) => {
+            if (!enemy.alive) return;
+            const sway = active ? Math.sin(frame * .035 * config.speed + enemy.phase) * 11 : Math.sin(enemy.phase) * 5;
+            drawEnemy(enemy.x + sway, enemy.y, i);
+          });
+        } else if (!active) {
+          const cols = Math.min(config.enemies, 8);
+          for (let i = 0; i < config.enemies; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = 45 + col * (canvas.width - 90) / Math.max(1, cols - 1);
+            drawEnemy(x, 58 + row * 34, i);
+          }
+        }
+        if (player) drawShip(player.x - 9, player.y - 10, config.color, config.ship);
+        if (active) {
+          bullets.forEach(b => rect(b.x - 1, b.y, 2, 8, "#e7f7ff"));
+          enemyBullets.forEach(b => rect(b.x - 2, b.y, 4, 7, "#ff8c70"));
+        }
+        if (!active && statusText.textContent === "READY TO PLAY") {
+          ctx.fillStyle = "#0b1322c9";
+          ctx.fillRect(92, 161, 328, 56);
+          ctx.strokeStyle = "#40506a";
+          ctx.strokeRect(92.5, 161.5, 327, 55);
+          ctx.font = "bold 12px monospace";
+          ctx.fillStyle = "#e7f2ef";
+          ctx.textAlign = "center";
+          ctx.fillText("YOUR SHIP IS WAITING", canvas.width / 2, 185);
+          ctx.font = "10px monospace";
+          ctx.fillStyle = "#90a3b7";
+          ctx.fillText("PRESS START TO LAUNCH", canvas.width / 2, 202);
+          ctx.textAlign = "left";
+        }
+      }
+
+      function loop(time) {
+        if (!active) return;
+        const dt = Math.min((time - (lastTime || time)) / 16.67, 2);
+        lastTime = time;
+        frame += dt;
+        const movement = 3 * config.speed * dt;
+        if (keys.has("ArrowLeft") || keys.has("a")) player.x -= movement;
+        if (keys.has("ArrowRight") || keys.has("d")) player.x += movement;
+        player.x = Math.max(15, Math.min(canvas.width - 15, player.x));
+        player.cooldown -= dt;
+        if ((keys.has(" ") || keys.has("ArrowUp") || keys.has("w")) && player.cooldown <= 0) {
+          bullets.push({ x: player.x, y: player.y - 12 });
+          player.cooldown = 11;
+        }
+        bullets.forEach(b => b.y -= 6 * config.speed * dt);
+        enemyBullets.forEach(b => b.y += 2.2 * config.speed * dt);
+        bullets = bullets.filter(b => b.y > 28);
+        enemyBullets = enemyBullets.filter(b => b.y < canvas.height - 20);
+        enemies.forEach(enemy => {
+          if (!enemy.alive) return;
+          const ex = enemy.x + Math.sin(frame * .035 * config.speed + enemy.phase) * 11;
+          if (Math.random() < .0018 * config.speed) enemyBullets.push({ x: ex, y: enemy.y + 14 });
+          bullets.forEach((bullet, i) => {
+            if (Math.abs(bullet.x - ex) < 12 && Math.abs(bullet.y - (enemy.y + 8)) < 12) {
+              enemy.alive = false;
+              bullets.splice(i, 1);
+              score += 100;
+            }
+          });
+        });
+        if (player.invulnerable > 0) player.invulnerable -= dt;
+        enemyBullets.forEach((bullet, i) => {
+          if (player.invulnerable <= 0 && Math.abs(bullet.x - player.x) < 11 && Math.abs(bullet.y - player.y) < 13) {
+            enemyBullets.splice(i, 1);
+            lives--;
+            player.invulnerable = 80;
+            if (lives <= 0) endGame(false);
+          }
+        });
+        if (enemies.every(enemy => !enemy.alive)) endGame(true);
+        if (active) {
+          draw();
+          if (player.invulnerable > 0 && Math.floor(frame / 5) % 2 === 0) {
+            rect(player.x - 12, player.y - 13, 24, 26, "#080e20");
+          }
+          requestAnimationFrame(loop);
+        }
+      }
+
+      function endGame(won) {
+        active = false;
+        statusText.textContent = won ? "WAVE CLEARED" : "GAME OVER";
+        playButton.innerHTML = "↻ &nbsp; Play again";
+        draw();
+        ctx.fillStyle = "#0b1322d9";
+        ctx.fillRect(108, 158, 296, 64);
+        ctx.strokeStyle = won ? config.color : "#ff7895";
+        ctx.strokeRect(108.5, 158.5, 295, 63);
+        ctx.textAlign = "center";
+        ctx.font = "bold 14px monospace";
+        ctx.fillStyle = won ? config.color : "#ff9aae";
+        ctx.fillText(won ? "WAVE CLEARED!" : "GAME OVER", canvas.width / 2, 184);
+        ctx.font = "10px monospace";
+        ctx.fillStyle = "#d4e0e5";
+        ctx.fillText(`FINAL SCORE  ${String(score).padStart(5, "0")}`, canvas.width / 2, 204);
+        ctx.textAlign = "left";
+      }
+
+      playButton.addEventListener("click", () => {
+        if (active) {
+          active = false;
+          statusText.textContent = "PAUSED";
+          playButton.innerHTML = "▶ &nbsp; Resume game";
+        } else if (statusText.textContent === "PAUSED") {
+          active = true;
+          lastTime = 0;
+          statusText.textContent = "IN THE FIGHT";
+          playButton.innerHTML = "Ⅱ &nbsp; Pause game";
+          requestAnimationFrame(loop);
+        } else {
+          newGame();
+        }
+      });
+      document.getElementById("reset-button").addEventListener("click", resetGame);
+      [titleInput, styleInput, countInput, speedInput].forEach(input => input.addEventListener("input", updateConfig));
+      document.querySelectorAll(".swatch").forEach(button => button.addEventListener("click", () => {
+        config.color = button.dataset.color;
+        document.querySelectorAll(".swatch").forEach(swatch => swatch.setAttribute("aria-pressed", String(swatch === button)));
+        document.getElementById("color-name").textContent = colors[config.color];
+        if (!active) draw();
+      }));
+      window.addEventListener("keydown", event => {
+        const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(key)) event.preventDefault();
+        if (key === "r") { resetGame(); newGame(); return; }
+        keys.add(key);
+      });
+      window.addEventListener("keyup", event => keys.delete(event.key.length === 1 ? event.key.toLowerCase() : event.key));
+      canvas.addEventListener("pointermove", event => {
+        if (!active || event.buttons === 0) return;
+        const bounds = canvas.getBoundingClientRect();
+        player.x = Math.max(15, Math.min(canvas.width - 15, (event.clientX - bounds.left) * canvas.width / bounds.width));
+      });
+      canvas.addEventListener("pointerdown", event => {
+        if (!active) return;
+        canvas.setPointerCapture(event.pointerId);
+        const bounds = canvas.getBoundingClientRect();
+        player.x = Math.max(15, Math.min(canvas.width - 15, (event.clientX - bounds.left) * canvas.width / bounds.width));
+        keys.add(" ");
+      });
+      canvas.addEventListener("pointerup", () => keys.delete(" "));
+      updateConfig();
+      resetGame();
+    })();
+  </script>
+</body>
+</html>
