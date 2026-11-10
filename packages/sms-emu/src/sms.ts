@@ -80,7 +80,10 @@ export class SMS implements Hal {
   runFrame() {
     if (this.pauseRequest) {
       this.pauseRequest = false;
+      // z80-emulator löscht beim NMI auch IFF2; echte Z80 merken IFF1 dort, sonst bleibt nach RETN der VBlank-IRQ aus
+      const iff1 = this.cpu.regs.iff1;
       this.cpu.nonMaskableInterrupt();
+      this.cpu.regs.iff2 = iff1;
     }
     const vdp = this.vdp;
     vdp.startFrame();

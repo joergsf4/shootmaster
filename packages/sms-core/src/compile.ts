@@ -4,7 +4,7 @@ import { bakePath, formationMembers } from './path';
 import { periodTable, sfxBytes, songBytes } from './sound';
 import {
   ACROSS, MAX_BG_TILES, MAX_SPRITE_TILES, SCREEN_H, SCREEN_W,
-  type Hitbox, type Metatile, type Project, type SpriteGfx, type TileRef,
+  type Hitbox, type Level, type Metatile, type Project, type SpriteGfx, type TileRef,
 } from './types';
 
 export const DATA_VERSION = 3;
@@ -13,6 +13,30 @@ export const SLOT1 = 0x4000;
 export const SLOT2 = 0x8000;
 
 export class CompileError extends Error {}
+
+/** Letzte Kameraposition (Pixel): dort hält das Level an. */
+export const levelCamMax = (lv: Level) => Math.max(0, Math.max(1, lv.length) * 16 - (lv.orientation === 'h' ? SCREEN_W : SCREEN_H));
+/** Scrolltempo im ROM: 1/16 px pro Frame */
+export const speedByte = (speed: number) => Math.max(0, Math.min(0x7f, Math.round(speed * 16))) || 0;
+export const levelSpeed = (lv: Level) => speedByte(lv.speed);
+/** Ereignisse in Engine-Reihenfolge: nach Position, gleiche Position in Listenreihenfolge */
+export const sortedEvents = (lv: Level) => [...lv.events].sort((a, c) => a.pos - c.pos);
+const EVENT_CODE = { spawn: 1, speed: 2, music: 3, waitClear: 4, checkpoint: 5 } as const;
+const SHOT_CODE = { none: 0, straight: 1, aimed: 2, fan3: 3 } as const;
+
+/** Sichtbare Pixel des ersten Frames (leer: ganzes Sprite) */
+export function opaqueBox(s: SpriteGfx): Hitbox {
+  let x0 = s.width, y0 = s.height, x1 = -1, y1 = -1;
+  (s.frames[0] ?? []).forEach((c, i) => {
+    if (!c) return;
+    const x = i % s.width, y = Math.floor(i / s.width);
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  });
+  return x1 < 0 ? { x: 0, y: 0, w: s.width, h: s.height } : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+/** Schuss-Geschwindigkeit je Richtung i (i × 22,5°, 0 = rechts, 4 = unten): vx, vy in 1/256 px/Frame (8.8 mit Vorzeichen) */
+export const shotVelocity = (speed: number, i: number) =>
+  [Math.cos, Math.sin].map((f) => Math.max(-0x7fff, Math.min(0x7fff, Math.round(f((i * Math.PI) / 8) * speed * 256))) || 0);
 
 /** Einfacher Linker für eine 16-KB-Bank. */
 class Bank {
@@ -109,6 +133,10 @@ export interface CompiledData {
 export interface CompileOptions {
   /** Soundtest-ROM: spielt nur einen Song oder Effekt, ohne Spiel */
   soundTest?: { song: string } | { sfx: string };
+  /** Test-ROM „Ab hier spielen“: Kameraposition (Pixel), an der das erste Level beginnt; frühere Ereignisse entfallen */
+  startCam?: number;
+  /** Test-ROM: Treffer kosten kein Leben */
+  invincible?: boolean;
 }
 
 export function compileProject(p: Project, opts: CompileOptions = {}): CompiledData {
@@ -145,7 +173,7 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
   const H_PERIODS = g.reserve(2); // 28
   const H_SOUNDS = g.reserve(3); // 2A..2C Schuss, Explosion, Treffer
   const H_TEST = g.reserve(1); // 2D Soundtest
-  g.reserve(2);
+  g.put([opts.invincible ? 1 : 0, 0]); // 2E unverwundbar, 2F reserviert
 
   g.setWord(H_SPR_COUNT, layout.tiles.length);
   g.setWord(H_SPR_PTR, g.put(layout.tiles.flatMap(encodeTile)));
@@ -173,13 +201,27 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     pl.shotOffset.x & 0xff, pl.shotOffset.y & 0xff, clampB(Math.max(1, pl.lives)),
   ]));
 
-  // Gegnertypen (je 16 Byte)
+  // Gegnertypen (je 16 Byte) mit Schussdefinition
   const typeIndex = new Map<string, number>();
   const typeBytes: number[] = [];
+  const i8 = (v: number) => Math.max(-128, Math.min(127, Math.round(v))) & 0xff;
+  const center = (h: Hitbox) => [h.x + (h.w >> 1), h.y + (h.h >> 1)];
   p.enemyTypes.forEach((t, i) => {
-    need(t.spriteId, `Gegnertyp ${t.name}`);
+    const es = need(t.spriteId, `Gegnertyp ${t.name}`);
     typeIndex.set(t.id, i);
-    const rec = [clampB(Math.max(1, t.hp)), ...hb(t.hitbox), ...w(animAddr.get(t.spriteId)!), clampB(t.score)];
+    let shotAddr = 0;
+    if (t.shot.pattern !== 'none') {
+      const ss = need(t.shot.spriteId, `Gegnertyp ${t.name}: Schuss`);
+      const box = opaqueBox(ss);
+      const [pcx, pcy] = center(pl.hitbox), [scx, scy] = center(box);
+      shotAddr = g.put([
+        SHOT_CODE[t.shot.pattern], clampB(Math.max(1, t.shot.interval)), ...w(animAddr.get(ss.id)!), ...hb(box),
+        i8((es.width >> 1) - (ss.width >> 1)), i8((es.height >> 1) - (ss.height >> 1)), // Schuss startet in der Gegnermitte
+        i8(pcx - scx), i8(pcy - scy),
+        ...Array.from({ length: 16 }, (_, d) => shotVelocity(t.shot.speed, d)).flat().flatMap((v) => w(v & 0xffff)),
+      ]);
+    }
+    const rec = [clampB(Math.max(1, t.hp)), ...hb(t.hitbox), ...w(animAddr.get(t.spriteId)!), clampB(t.score), ...w(shotAddr)];
     typeBytes.push(...rec, ...new Array(16 - rec.length).fill(0));
   });
   g.setWord(H_ETYPES, g.put(typeBytes.length ? typeBytes : new Array(16).fill(0)));
@@ -213,12 +255,24 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
   const formIdx = new Map(p.formations.map((f, i) => [f.id, i]));
   const levelBanks: Bank[] = [];
   const levelBytes: number[] = [];
-  p.levels.forEach((lv) => {
+  p.levels.forEach((lv, li) => {
     const b = new Bank(SLOT1, `Level „${lv.name}“`);
     const across = ACROSS[lv.orientation];
     const len = Math.max(1, lv.length);
-    const camMax = Math.max(0, len * 16 - (lv.orientation === 'h' ? SCREEN_W : SCREEN_H));
-    const speed = Math.max(0, Math.min(0x7f, Math.round(lv.speed * 16)));
+    const camMax = levelCamMax(lv);
+    const evPos = (pos: number) => Math.max(0, Math.min(camMax, Math.round(pos)));
+    const songRef = (id: string | undefined) => songIdx.get(id ?? '') ?? 0xff;
+    // shortcut: startCam gilt nur für das erste Level (der Editor stellt das gewählte nach vorn); je Level erst, wenn mehrere Level versetzt starten sollen
+    const startCam = li === 0 ? evPos(opts.startCam ?? 0) : 0;
+    const all = sortedEvents(lv);
+    const events = all.filter((e) => evPos(e.pos) >= startCam);
+    // Tempo und Musik der weggelassenen Ereignisse gelten ab Start
+    let speed = levelSpeed(lv), music = songRef(lv.musicId);
+    for (const e of all) {
+      if (evPos(e.pos) >= startCam) break;
+      if (e.type === 'speed') speed = speedByte(e.speed ?? 0);
+      if (e.type === 'music') music = songRef(e.musicId);
+    }
     b.put([lv.orientation === 'h' ? 0 : 1, ...w(len), speed]); // 00..03
     b.put(padPalette(p.palettes.bg, false)); // 04..13
     const L_MT = b.reserve(2), L_MAP = b.reserve(2), L_EV = b.reserve(2), L_FORM = b.reserve(2); // 14..1B
@@ -226,9 +280,10 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     b.put(w(camMax)); // 21
     const startPos = lv.orientation === 'h' ? [32, 88] : [120, 160];
     b.put(startPos); // 23,24
-    b.put([songIdx.get(lv.musicId ?? '') ?? 0xff]); // 25
+    b.put([music]); // 25
     const L_SOLID = b.reserve(2); // 26 → je Pinsel 1 = tödlich
-    b.reserve(8);
+    b.put(w(startCam)); // 28 Startkamera
+    b.reserve(6);
 
     // Metatiles (je 4 Name-Table-Einträge)
     const mt = p.metatiles;
@@ -241,7 +296,8 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     b.setWord(L_MAP, b.put(map));
 
     // Formationen dieses Levels
-    const used = [...new Set(lv.events.map((e) => e.formationId).filter((id) => formIdx.has(id)))];
+    const spawns = events.filter((e) => e.type === 'spawn' && formIdx.has(e.formationId ?? ''));
+    const used = [...new Set(spawns.map((e) => e.formationId!))];
     const local = new Map(used.map((id, i) => [id, i]));
     const formAddrs = used.map((id) => {
       const f = p.formations[formIdx.get(id)!];
@@ -260,10 +316,11 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
     b.setWord(L_FORM, b.put(formAddrs.flatMap(w).concat(formAddrs.length ? [] : [0, 0])));
 
     // Ereignisse
-    const ev = lv.events
-      .filter((e) => local.has(e.formationId))
-      .sort((a, c) => a.pos - c.pos)
-      .flatMap((e) => [...w(Math.max(0, Math.min(camMax, Math.round(e.pos)))), 1, local.get(e.formationId)!]);
+    const param = (e: (typeof events)[number]) =>
+      e.type === 'spawn' ? local.get(e.formationId!)! : e.type === 'speed' ? speedByte(e.speed ?? 0) : e.type === 'music' ? songRef(e.musicId) : 0;
+    const ev = events
+      .filter((e) => e.type !== 'spawn' || local.has(e.formationId ?? ''))
+      .flatMap((e) => [...w(evPos(e.pos)), EVENT_CODE[e.type], param(e)]);
     b.setWord(L_EV, b.put([...ev, 0xff, 0xff, 0, 0]));
 
     levelBanks.push(b);

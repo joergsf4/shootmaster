@@ -1,12 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ACROSS, framePositions, formationMembers, type Level, type Orientation } from '@sms/core';
+import { ACROSS, framePositions, formationMembers, LEVEL_EVENT_TYPES, sortedEvents, type Level, type LevelEvent, type LevelEventType, type Orientation } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { metatileCanvases, spriteCanvases } from '../gfx';
 import { MetatileList } from './TileEditor';
 
 type Tool = 'brush' | 'rect' | 'fill' | 'pick' | 'erase' | 'events';
+/** Vorlage für neue Ereignisse = Werte des gewählten Ereignisses */
+type EvTpl = Required<Omit<LevelEvent, 'pos'>>;
 
-export function LevelEditor({ onPlay }: { onPlay: (levelId: string) => void }) {
+const EV_LABEL: Record<LevelEventType, string> = { spawn: 'Formation', speed: 'Tempo', music: 'Musik', waitClear: 'Warten, bis alle weg sind', checkpoint: 'Checkpoint' };
+const EV_COLOR: Record<LevelEventType, string> = { spawn: '#ff5a5a', speed: '#4fc3f7', music: '#c792ea', waitClear: '#ffa04f', checkpoint: '#2fbf71' };
+const makeEvent = (pos: number, t: EvTpl): LevelEvent =>
+  t.type === 'spawn' ? { pos, type: t.type, formationId: t.formationId }
+    : t.type === 'speed' ? { pos, type: t.type, speed: t.speed }
+      : t.type === 'music' ? { pos, type: t.type, musicId: t.musicId }
+        : { pos, type: t.type };
+
+export function LevelEditor({ onPlay }: { onPlay: (levelId: string, startCam?: number) => void }) {
   const p = useProject();
   const { edit, sel, select } = useStore();
   const lv = p.levels.find((l) => l.id === sel.level) ?? p.levels[0];
@@ -14,9 +24,32 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string) => void }) {
   const [tool, setTool] = useState<Tool>('brush');
   const [zoom, setZoom] = useState(2);
   const [evSel, setEvSel] = useState<number | null>(null);
-  const [evForm, setEvForm] = useState(p.formations[0]?.id ?? '');
+  const [tpl, setTplState] = useState<EvTpl>({ type: 'spawn', formationId: p.formations[0]?.id ?? '', speed: 0, musicId: '' });
+  const setTpl = (patch: Partial<EvTpl>, key?: string) => {
+    const t = { ...tpl, ...patch };
+    setTplState(t);
+    if (evSel !== null) edit((d) => { const L = d.levels[li]; L.events[evSel] = makeEvent(L.events[evSel].pos, t); }, key);
+  };
+  const pickEvent = (i: number | null) => {
+    setEvSel(i);
+    const ev = i === null ? undefined : lv.events[i]; // gerade angelegt: noch nicht in lv, Vorlage stimmt schon
+    if (ev) { const { pos: _, ...f } = ev; setTplState((t) => ({ ...t, ...f })); }
+  };
   const [showGrid, setShowGrid] = useState(true);
   useEffect(() => { setEvSel(null); }, [sel.level]);
+  // Kameraposition am linken (h) bzw. unteren (v) Rand der Ansicht, setzt LevelCanvas
+  const camAt = useRef(0);
+  const playHere = useRef(() => {});
+  playHere.current = () => { if (lv) onPlay(lv.id, camAt.current); };
+  useEffect(() => {
+    const kd = (e: KeyboardEvent) => {
+      const t = (e.target as HTMLElement).tagName;
+      if (e.code !== 'KeyP' || e.repeat || e.ctrlKey || e.metaKey || e.altKey || t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+      playHere.current();
+    };
+    window.addEventListener('keydown', kd);
+    return () => window.removeEventListener('keydown', kd);
+  }, []);
 
   const addLevel = (o: Orientation) => {
     const id = uid('lvl');
@@ -59,12 +92,13 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string) => void }) {
         <div className="form">
           <label>Name <input value={lv.name} onChange={(e) => edit((d) => { d.levels[li].name = e.target.value; }, 'lvname')} /></label>
           <label>Richtung <b>{lv.orientation === 'h' ? 'horizontal ⇢' : 'vertikal ⇡'}</b></label>
-          <label>Länge <input type="number" value={lv.length} onChange={(e) => setLen(+e.target.value)} /> Metatiles ({(lv.length * 16 / (lv.orientation === 'h' ? 256 : 192)).toFixed(1)} Bildschirme)</label>
+          <label>Länge <LengthInput value={lv.length} onCommit={setLen} /> Metatiles ({(lv.length * 16 / (lv.orientation === 'h' ? 256 : 192)).toFixed(1)} Bildschirme)</label>
           <label>Scrolltempo <input type="range" min={0.0625} max={3} step={0.0625} value={lv.speed} onChange={(e) => edit((d) => { d.levels[li].speed = +e.target.value; }, 'lvspeed')} /> {lv.speed} px/F</label>
           <label>Musik <select value={lv.musicId ?? ''} onChange={(e) => edit((d) => { d.levels[li].musicId = e.target.value; })}>
             <option value="">– Stille –</option>
             {p.songs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select></label>
+          {/* shortcut: ohne Tempo-/Warte-Ereignisse gerechnet; genauer, wenn die Dauer wichtig wird */}
           <label>Dauer ≈ <b>{(Math.max(0, lv.length * 16 - (lv.orientation === 'h' ? 256 : 192)) / Math.max(lv.speed, 0.01) / 60).toFixed(0)} s</b></label>
         </div>
         <button className="primary" onClick={() => onPlay(lv.id)}>▶ Dieses Level spielen</button>
@@ -75,38 +109,64 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string) => void }) {
         <div className="toolbar">
           {(['brush', 'rect', 'fill', 'pick', 'erase', 'events'] as Tool[]).map((t) => (
             <button key={t} data-tour={t} className={tool === t ? 'active' : ''} onClick={() => setTool(t)}>
-              {{ brush: '✎ Pinsel', rect: '▭ Rechteck', fill: '◧ Füllen', pick: '⌖ Pipette', erase: '⌫ Radierer', events: '◆ Gegner-Ereignisse' }[t]}
+              {{ brush: '✎ Pinsel', rect: '▭ Rechteck', fill: '◧ Füllen', pick: '⌖ Pipette', erase: '⌫ Radierer', events: '◆ Ereignisse' }[t]}
             </button>
           ))}
           <span className="sep" />
           <label>Zoom <select value={zoom} onChange={(e) => setZoom(+e.target.value)}>{[1, 2, 3].map((z) => <option key={z} value={z}>{z}×</option>)}</select></label>
           <label className="check"><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Raster</label>
+          <button onClick={() => playHere.current()} title="Spielt ab dem linken (horizontal) bzw. unteren (vertikal) Rand der Ansicht (Taste P)">▶ Ab hier</button>
           {tool === 'events' && (
             <>
               <span className="sep" />
-              <label>Formation <select value={evForm} onChange={(e) => { setEvForm(e.target.value); if (evSel !== null) edit((d) => { d.levels[li].events[evSel].formationId = e.target.value; }); }}>
-                {p.formations.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
+              <label>Typ <select value={tpl.type} onChange={(e) => setTpl({ type: e.target.value as LevelEventType })}>
+                {LEVEL_EVENT_TYPES.map((t) => <option key={t} value={t}>{EV_LABEL[t]}</option>)}</select></label>
+              {tpl.type === 'spawn' && <label>Formation <select value={tpl.formationId} onChange={(e) => setTpl({ formationId: e.target.value })}>
+                {p.formations.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>}
+              {tpl.type === 'speed' && <label>Tempo <input type="range" min={0} max={3} step={0.0625} value={tpl.speed}
+                onChange={(e) => setTpl({ speed: +e.target.value }, `evspeed-${lv.id}-${evSel}`)} /> {tpl.speed ? `${tpl.speed} px/F` : 'Stopp'}</label>}
+              {tpl.type === 'music' && <label>Song <select value={tpl.musicId} onChange={(e) => setTpl({ musicId: e.target.value })}>
+                <option value="">– Stille –</option>
+                {p.songs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
+              {evSel !== null && <button title="Neues Ereignis an derselben Position, läuft direkt danach ab" onClick={() => {
+                edit((d) => { const L = d.levels[li]; L.events.splice(evSel + 1, 0, makeEvent(L.events[evSel].pos, tpl)); });
+                setEvSel(evSel + 1);
+              }}>+ Gleiche Stelle</button>}
               {evSel !== null && <button onClick={() => { edit((d) => { d.levels[li].events.splice(evSel, 1); }); setEvSel(null); }}>Ereignis löschen</button>}
+              {evSel !== null && <button onClick={() => onPlay(lv.id, lv.events[evSel].pos)}>▶ Ab diesem Ereignis</button>}
             </>
           )}
         </div>
         <p className="hint">
           {tool === 'events'
-            ? 'Klick setzt ein Ereignis: Die Formation startet, wenn diese Linie den Bildschirmrand erreicht. Marker ziehen = verschieben, Rechtsklick = löschen.'
+            ? 'Klick setzt ein Ereignis: Es löst aus, wenn diese Linie den Bildschirmrand erreicht. Mehrere an einer Stelle laufen in Marker-Reihenfolge ab. Marker ziehen = verschieben, Rechtsklick = löschen.'
             : 'Linke Maustaste malt, rechte Maustaste radiert. Mausrad scrollt, Shift+Mausrad quer.'}
         </p>
-        <LevelCanvas level={lv} li={li} tool={tool} zoom={zoom} showGrid={showGrid} evSel={evSel} setEvSel={(i) => { setEvSel(i); if (i !== null) setEvForm(lv.events[i].formationId); }} evForm={evForm} />
+        <LevelCanvas camAt={camAt} level={lv} li={li} tool={tool} zoom={zoom} showGrid={showGrid} evSel={evSel} setEvSel={pickEvent} tpl={tpl} />
       </div>
     </div>
   );
 }
 
-interface CanvasProps {
-  level: Level; li: number; tool: Tool; zoom: number; showGrid: boolean;
-  evSel: number | null; setEvSel: (i: number | null) => void; evForm: string;
+/** Übernimmt erst bei Enter/Verlassen: Kürzen schneidet die Karte ab, das darf nicht schon beim Tippen passieren. */
+function LengthInput({ value, onCommit }: { value: number; onCommit: (n: number) => void }) {
+  const [v, setV] = useState(String(value));
+  useEffect(() => { setV(String(value)); }, [value]);
+  const commit = () => {
+    const n = Math.round(Number(v));
+    if (v.trim() && Number.isFinite(n) && n !== value) onCommit(n);
+    setV(String(value)); // leer/ungültig/geklemmt → angezeigten Wert zurücksetzen (bei Änderung überschreibt der Effekt)
+  };
+  return <input type="number" value={v} onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />;
 }
 
-function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evForm }: CanvasProps) {
+interface CanvasProps {
+  camAt: React.MutableRefObject<number>;
+  level: Level; li: number; tool: Tool; zoom: number; showGrid: boolean;
+  evSel: number | null; setEvSel: (i: number | null) => void; tpl: EvTpl;
+}
+
+function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvSel, tpl }: CanvasProps) {
   const p = useProject();
   const { edit, sel, select } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -142,6 +202,18 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
   const evLine = (pos: number) => (H ? pos + 256 : worldH - (pos + 192));
   const camMax = Math.max(0, worldW - 256, worldH - 192);
   const posFromWorld = (wx: number, wy: number) => Math.min(camMax, Math.max(0, Math.round(H ? wx - 256 : worldH - wy - 192)));
+  camAt.current = Math.min(camMax, Math.max(0, Math.round(H ? vp.x : worldH - vp.y - vp.h)));
+  // Marker an derselben Position stapeln (H: nach unten, V: nach links), Reihenfolge = Ablauf
+  const marker = (i: number) => {
+    const ev = lv.events[i], L = evLine(ev.pos);
+    const k = lv.events.slice(0, i).filter((e) => e.pos === ev.pos).length;
+    return H ? { x: L, y: 6 + k * 12, k } : { x: 248 - k * 12, y: L, k };
+  };
+  const evLabel = (ev: LevelEvent) =>
+    ev.type === 'spawn' ? p.formations.find((x) => x.id === ev.formationId)?.name ?? '?'
+      : ev.type === 'speed' ? (ev.speed ? `Tempo ${ev.speed}` : 'Stopp')
+        : ev.type === 'music' ? `♪ ${ev.musicId ? p.songs.find((s) => s.id === ev.musicId)?.name ?? '?' : 'Stille'}`
+          : ev.type === 'waitClear' ? 'Warten' : 'Checkpoint';
 
   const formSprites = useMemo(() => {
     const m = new Map<string, HTMLCanvasElement | undefined>();
@@ -185,17 +257,18 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
     // Ereignisse
     lv.events.forEach((ev, i) => {
       const L = evLine(ev.pos);
-      const f = p.formations.find((x) => x.id === ev.formationId);
-      ctx.strokeStyle = i === evSel ? '#ffcc00' : 'rgba(255,90,90,0.8)';
+      const f = ev.type === 'spawn' ? p.formations.find((x) => x.id === ev.formationId) : undefined;
+      const col = i === evSel ? '#ffcc00' : EV_COLOR[ev.type];
+      ctx.strokeStyle = i === evSel ? col : col + 'cc';
       ctx.lineWidth = (i === evSel ? 2 : 1) / zoom;
       ctx.beginPath();
       if (H) { ctx.moveTo(L, 0); ctx.lineTo(L, 192); } else { ctx.moveTo(0, L); ctx.lineTo(256, L); }
       ctx.stroke();
-      ctx.fillStyle = i === evSel ? '#ffcc00' : '#ff5a5a';
-      const mx = H ? L : 248, my = H ? 6 : L;
+      ctx.fillStyle = col;
+      const { x: mx, y: my, k } = marker(i);
       ctx.beginPath(); ctx.moveTo(mx, my - 5); ctx.lineTo(mx + 5, my); ctx.lineTo(mx, my + 5); ctx.lineTo(mx - 5, my); ctx.fill();
       ctx.font = '8px sans-serif';
-      ctx.fillText(f?.name ?? '?', H ? L + 7 : 4, H ? 10 : L - 3);
+      ctx.fillText(evLabel(ev), H ? L + 7 : 4, H ? my + 4 : L - 3 - k * 9);
       // Pfad-Overlay der gewählten Formation (Bildschirm zum Auslösezeitpunkt)
       if (i === evSel && f && f.points.length >= 2) {
         const camX = H ? ev.pos : 0, camTop = H ? 0 : worldH - ev.pos - 192;
@@ -204,7 +277,10 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
         // Kamera bewegt sich weiter → Pfad in Weltkoordinaten
         const path = framePositions(f.points, f.speed);
         const mem = formationMembers(f);
-        const speed = lv.speed;
+        // Tempo an dieser Stelle (Tempo-Ereignisse bis hier, auch direkt danach an derselben Position)
+        // shortcut: „Warten“ hält die Kamera in Wahrheit an; ausbauen, wenn Boss-Vorschauen stören
+        let speed = lv.speed;
+        for (const e of sortedEvents(lv)) { if (e.pos > ev.pos) break; if (e.type === 'speed') speed = e.speed ?? 0; }
         const spr = formSprites.get(f.id);
         ctx.strokeStyle = 'rgba(255,204,0,0.9)'; ctx.beginPath();
         path.forEach((q, k) => {
@@ -266,10 +342,17 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
     });
   };
 
-  const eventAt = (wx: number, wy: number) => lv.events.findIndex((ev) => {
-    const L = evLine(ev.pos);
-    return H ? Math.abs(wx - L) < 5 : Math.abs(wy - L) < 5;
-  });
+  // Ereignis unter dem Mauszeiger: Linie getroffen, bei gestapelten Markern der nächste
+  const eventAt = (wx: number, wy: number) => {
+    let best = -1, bd = Infinity;
+    lv.events.forEach((ev, i) => {
+      const L = evLine(ev.pos), m = marker(i);
+      if (Math.abs(H ? wx - L : wy - L) >= 5) return;
+      const d = Math.abs(H ? wy - m.y : wx - m.x);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  };
 
   const down = (e: React.PointerEvent) => {
     const { wx, wy } = world(e);
@@ -280,9 +363,9 @@ function LevelCanvas({ level: lv, li, tool, zoom, showGrid, evSel, setEvSel, evF
       const i = eventAt(wx, wy);
       if (e.button === 2) { if (i >= 0) { edit((d) => { d.levels[li].events.splice(i, 1); }); setEvSel(null); } return; }
       if (i >= 0) { setEvSel(i); drag.current = { mode: 'event', value: 0, stroke, ev: i }; return; }
-      if (!evForm) return;
+      if (tpl.type === 'spawn' && !tpl.formationId) return;
       const pos = posFromWorld(wx, wy);
-      edit((d) => { d.levels[li].events.push({ pos, formationId: evForm }); });
+      edit((d) => { d.levels[li].events.push(makeEvent(pos, tpl)); });
       setEvSel(lv.events.length);
       drag.current = { mode: 'event', value: 0, stroke, ev: lv.events.length };
       return;

@@ -66,7 +66,7 @@ function MusicEditor() {
   };
 
   if (!song) return <div className="panel"><button onClick={newSong}>+ Song</button></div>;
-  const usedIn = p.levels.filter((l) => l.musicId === song.id).map((l) => l.name);
+  const usedIn = p.levels.filter((l) => l.musicId === song.id || l.events.some((e) => e.type === 'music' && e.musicId === song.id)).map((l) => l.name);
   const c = song.channels[ch];
 
   return (
@@ -82,7 +82,10 @@ function MusicEditor() {
           <button onClick={() => {
             if (usedIn.length && !confirm(`Song wird in ${usedIn.join(', ')} verwendet. Trotzdem löschen?`)) return;
             setPlaying(false);
-            edit((d) => { d.songs.splice(si, 1); d.levels.forEach((l) => { if (l.musicId === song.id) l.musicId = ''; }); });
+            edit((d) => { d.songs.splice(si, 1); d.levels.forEach((l) => {
+              if (l.musicId === song.id) l.musicId = '';
+              l.events.forEach((e) => { if (e.type === 'music' && e.musicId === song.id) e.musicId = ''; });
+            }); });
           }}>Löschen</button>
         </div>
         <div className="form">

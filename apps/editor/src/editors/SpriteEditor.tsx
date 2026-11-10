@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { layoutSprites, MAX_SPRITE_TILES, crop, type SpriteGfx } from '@sms/core';
+import { layoutSprites, MAX_SPRITE_TILES, crop, spriteUsers, type SpriteGfx, type Use } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { PixelEditor } from '../components/PixelEditor';
 import { spriteCanvases } from '../gfx';
+import { UsedBy } from '../components/Problems';
 
 export function SpriteEditor() {
   const p = useProject();
@@ -11,7 +12,9 @@ export function SpriteEditor() {
   const frame = Math.min(sel.frame, (s?.frames.length ?? 1) - 1);
   const used = useMemo(() => layoutSprites(p.sprites).tiles.length, [p.sprites]);
   const idx = p.sprites.findIndex((x) => x.id === s?.id);
-  const up = (fn: (d: SpriteGfx) => void) => edit((d) => { fn(d.sprites[idx]); });
+  const up = (fn: (d: SpriteGfx) => void, coalesce?: string) => edit((d) => { fn(d.sprites[idx]); }, coalesce);
+  const [blocked, setBlocked] = useState<Use[] | null>(null);
+  useEffect(() => { setBlocked(null); }, [s?.id]);
 
   const resize = (w: number, h: number) => up((d) => {
     d.frames = d.frames.map((f) => {
@@ -49,17 +52,18 @@ export function SpriteEditor() {
           <button onClick={() => { const id = uid('spr'); edit((d) => { d.sprites.push({ id, name: 'Neues Sprite', width: 16, height: 16, frames: [new Array(256).fill(0)], frameDelay: 8 }); }); select({ sprite: id, frame: 0 }); }}>+ Neu</button>
           {s && <button onClick={() => { const id = uid('spr'); edit((d) => { d.sprites.push({ ...JSON.parse(JSON.stringify(s)), id, name: s.name + ' Kopie' }); }); select({ sprite: id }); }}>Duplizieren</button>}
           {s && <button onClick={() => {
-            const users = [p.player.spriteId, p.player.shotSpriteId, p.explosionSpriteId, ...p.enemyTypes.map((e) => e.spriteId)];
-            if (users.includes(s.id)) { alert('Dieses Sprite wird noch verwendet (Spieler, Schuss, Explosion oder Gegnertyp).'); return; }
+            const users = spriteUsers(p, s.id);
+            if (users.length) { setBlocked(users); return; }
             edit((d) => { d.sprites.splice(idx, 1); });
           }}>Löschen</button>}
         </div>
+        {s && blocked && <UsedBy what={`Sprite „${s.name}“`} users={blocked} onClose={() => setBlocked(null)} />}
         <p className="hint">Sprites werden in 8×16-Hardware-Sprites zerlegt; leere Zellen kosten nichts, gleiche Zellen werden geteilt. Max. 8 Hardware-Sprites pro Bildzeile – sonst Flackern.</p>
       </div>
       {s && (
         <div className="panel">
           <div className="form-row">
-            <label>Name <input value={s.name} onChange={(e) => up((d) => { d.name = e.target.value; })} /></label>
+            <label>Name <input value={s.name} onChange={(e) => up((d) => { d.name = e.target.value; }, `spname-${s.id}`)} /></label>
             <label>Breite <select value={s.width} onChange={(e) => resize(+e.target.value, s.height)}>{[8, 16, 24, 32, 40, 48].map((v) => <option key={v}>{v}</option>)}</select></label>
             <label>Höhe <select value={s.height} onChange={(e) => resize(s.width, +e.target.value)}>{[16, 32, 48].map((v) => <option key={v}>{v}</option>)}</select></label>
             <label>Frame-Dauer <input type="number" min={1} max={60} value={s.frameDelay} onChange={(e) => up((d) => { d.frameDelay = Math.max(1, +e.target.value); })} /></label>

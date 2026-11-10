@@ -1,5 +1,5 @@
 // Mitgeliefertes Beispielprojekt (prozedural erzeugte Grafik)
-import type { Formation, Level, Metatile, Project, Sfx, Song, SpriteGfx, TileRef } from './types';
+import { ACROSS, type EnemyShot, type Formation, type Level, type LevelEvent, type Metatile, type Orientation, type Project, type Sfx, type Song, type SpriteGfx, type TileRef } from './types';
 
 type Px = number[];
 const img = (w: number, h: number, f: (x: number, y: number) => number): Px => {
@@ -110,14 +110,18 @@ function sprites(): SpriteGfx[] {
     if (d > r - 3) return 5;
     return r > 6 ? 0 : 6;
   });
+  const orb = img(8, 16, (x, y) => { const d = Math.hypot(x - 3.5, y - 7.5); return d < 1.6 ? 14 : d < 3 ? 12 : 0; });
   return [
     sprite('ship', 'Raumgleiter', 16, 16, [ship(2), ship(3)], 4),
     sprite('shot', 'Laser', 8, 16, [shot], 8),
     sprite('drone', 'Drohne', 16, 16, [drone(0), drone(1)], 8),
     sprite('bug', 'Käfer', 16, 16, [bug(0), bug(1)], 6),
     sprite('boom', 'Explosion', 16, 16, [boom(3), boom(5), boom(7), boom(8)], 5),
+    sprite('orb', 'Gegnerschuss', 8, 16, [orb], 8),
   ];
 }
+
+const spawn = (pos: number, formationId: string): LevelEvent => ({ pos, type: 'spawn', formationId });
 
 function levelH(): Level {
   const len = 80, across = 12, map: number[] = [];
@@ -136,12 +140,13 @@ function levelH(): Level {
   return {
     id: 'lvl-h', name: 'Orbit', orientation: 'h', length: len, speed: 0.5, map,
     events: [
-      { pos: 40, formationId: 'f-wave' },
-      { pos: 260, formationId: 'f-v' },
-      { pos: 420, formationId: 'f-wave-low' },
-      { pos: 600, formationId: 'f-loop' },
-      { pos: 820, formationId: 'f-v' },
-      { pos: 900, formationId: 'f-wave' },
+      spawn(40, 'f-wave'),
+      spawn(260, 'f-v'),
+      spawn(420, 'f-wave-low'),
+      { pos: 590, type: 'checkpoint' },
+      spawn(600, 'f-loop'),
+      spawn(820, 'f-v'),
+      spawn(900, 'f-wave'),
     ],
   };
 }
@@ -160,11 +165,12 @@ function levelV(): Level {
   return {
     id: 'lvl-v', name: 'Asteroidenfeld', orientation: 'v', length: len, speed: 0.5, map,
     events: [
-      { pos: 30, formationId: 'f-dive' },
-      { pos: 220, formationId: 'f-dive-r' },
-      { pos: 400, formationId: 'f-v-down' },
-      { pos: 560, formationId: 'f-dive' },
-      { pos: 640, formationId: 'f-dive-r' },
+      spawn(30, 'f-dive'),
+      spawn(220, 'f-dive-r'),
+      { pos: 390, type: 'checkpoint' },
+      spawn(400, 'f-v-down'),
+      spawn(560, 'f-dive'),
+      spawn(640, 'f-dive-r'),
     ],
   };
 }
@@ -223,6 +229,9 @@ function sfx(): Sfx[] {
   ];
 }
 
+/** Schießt nicht; Sprite und Werte sind Vorgaben, falls man ein Muster wählt */
+export const noShot = (spriteId: string): EnemyShot => ({ pattern: 'none', interval: 60, spriteId, speed: 1.5 });
+
 /** Ergänzt Sound-Felder in Projekten, die vor dem Sound-Editor gespeichert wurden. */
 export function upgradeProject(p: unknown): unknown {
   let o = p as (Omit<Partial<Project>, 'formatVersion'> & { tiles?: number[][]; formatVersion?: number }) | null;
@@ -238,6 +247,16 @@ export function upgradeProject(p: unknown): unknown {
     const { tiles: _drop, ...rest } = o;
     o = { ...rest, formatVersion: 2, metatiles };
   }
+  // Gegnertypen ohne Schuss stammen aus der Zeit vor den Gegnerschüssen
+  const shotless = (t: unknown) => !!t && typeof t === 'object' && !('shot' in t);
+  if (Array.isArray(o.enemyTypes) && o.enemyTypes.some(shotless)) {
+    const shot = noShot(o.player?.shotSpriteId ?? '');
+    o = { ...o, enemyTypes: o.enemyTypes.map((t) => (shotless(t) ? { ...t, shot: { ...shot } } : t)) };
+  }
+  // Ereignisse ohne Typ stammen aus der Zeit vor den Ereignistypen: alle ließen eine Formation erscheinen
+  const untyped = (e: unknown) => !!e && typeof e === 'object' && !('type' in e);
+  if (Array.isArray(o.levels) && o.levels.some((l) => Array.isArray(l?.events) && l.events.some(untyped)))
+    o = { ...o, levels: o.levels.map((l) => (Array.isArray(l?.events) ? { ...l, events: l.events.map((e) => (untyped(e) ? { ...e, type: 'spawn' as const } : e)) } : l)) };
   return o;
 }
 
@@ -254,13 +273,46 @@ export function createDemoProject(): Project {
       shotSpriteId: 'shot', shotSpeed: 6, shotHitbox: { x: 0, y: 5, w: 8, h: 6 }, fireRate: 8, shotOffset: { x: 12, y: 0 },
     },
     enemyTypes: [
-      { id: 'e-drone', name: 'Drohne', spriteId: 'drone', hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10 },
-      { id: 'e-bug', name: 'Käfer', spriteId: 'bug', hp: 2, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 20 },
+      { id: 'e-drone', name: 'Drohne', spriteId: 'drone', hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot('orb') },
+      { id: 'e-bug', name: 'Käfer', spriteId: 'bug', hp: 2, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 20, shot: { pattern: 'aimed', interval: 90, spriteId: 'orb', speed: 1.5 } },
     ],
     formations: formations(),
     levels: [{ ...levelH(), musicId: 'song-1' }, { ...levelV(), musicId: 'song-1' }],
     songs: songs(),
     sfx: sfx(),
     sounds: { shot: 'sfx-shot', explosion: 'sfx-boom', hit: 'sfx-hit' },
+  };
+}
+
+/** Leeres, spielbares Grundgerüst: Palette und Sound vom Demo, Platzhalter-Grafik, ein Gegner, eine Formation, ein leeres Level. */
+export function createTemplateProject(o: Orientation): Project {
+  const H = o === 'h';
+  const demo = createDemoProject();
+  const all = metatiles();
+  // Platzhalter zeigen in Flugrichtung (horizontal nach rechts, vertikal nach oben)
+  const ship = img(16, 16, (x, y) => {
+    const [a, b] = H ? [x, Math.abs(y - 7.5)] : [15 - y, Math.abs(x - 7.5)];
+    return a >= 2 && a <= 13 && b < (14 - a) * 0.5 ? (b < 1.5 ? 1 : 2) : 0;
+  });
+  const shot = H ? img(8, 16, (x, y) => (y >= 7 && y <= 8 ? 6 : 0)) : img(8, 16, (x, y) => (x >= 3 && x <= 4 && y >= 4 && y <= 11 ? 6 : 0));
+  const enemy = img(16, 16, (x, y) => (Math.abs(x - 7.5) + Math.abs(y - 7.5) < 7 ? 4 : 0));
+  const len = H ? 64 : 48;
+  return {
+    ...demo,
+    name: H ? 'Neues Spiel (horizontal)' : 'Neues Spiel (vertikal)',
+    metatiles: [all[0], all[1], all[2], all[6]],
+    sprites: [
+      sprite('ship', 'Spieler', 16, 16, [ship]),
+      sprite('shot', 'Schuss', 8, 16, [shot]),
+      sprite('enemy', 'Gegner', 16, 16, [enemy]),
+      demo.sprites.find((s) => s.id === 'boom')!,
+    ],
+    player: H ? demo.player : { ...demo.player, shotOffset: { x: 4, y: -12 }, shotHitbox: { x: 2, y: 4, w: 4, h: 8 } },
+    enemyTypes: [{ id: 'e-1', name: 'Gegner', spriteId: 'enemy', hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot('shot') }],
+    formations: [{
+      id: 'f-1', name: 'Kette', enemyTypeId: 'e-1', speed: 1.5, mode: 'chain', count: 5, spacing: 14, offsets: [],
+      points: H ? [{ x: 264, y: 80 }, { x: -40, y: 80 }] : [{ x: 120, y: -20 }, { x: 120, y: 220 }],
+    }],
+    levels: [{ id: 'lvl-1', name: 'Level 1', orientation: o, length: len, speed: 0.5, map: new Array(len * ACROSS[o]).fill(0), events: [] }],
   };
 }

@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 import { produce, type Draft } from 'immer';
-import { createDemoProject, upgradeProject, validateProject, type Project } from '@sms/core';
+import { createDemoProject, upgradeProject, validateProject, type DiagRef, type EditorTab, type Project } from '@sms/core';
 
 const KEY = 'sms-shmup-project-v1';
 const MAX_HISTORY = 200;
 
-export type Tab = 'palette' | 'tiles' | 'sprites' | 'objects' | 'formations' | 'levels' | 'sound';
+export type Tab = EditorTab;
 
 interface State {
   project: Project;
@@ -20,32 +20,54 @@ interface State {
   redo: () => void;
   setTab: (t: Tab) => void;
   select: (s: Partial<State['sel']>) => void;
+  /** Sprung zu einem Element (Problem-Panel, Verwender-Links) */
+  goto: (r: DiagRef) => void;
   load: (p: Project) => void;
   /** Autosave fehlgeschlagen → Nutzer muss exportieren */
   saveError: boolean;
+  /** Gespeicherter Stand war ungültig und wurde durch das Demo ersetzt (Hinweis-Banner) */
+  recovered: Recovered | null;
+  /** Banner schließen */
+  dismissRecovered: () => void;
 }
 
-function initial(): Project {
+/** raw = alter Stand; key = Sicherungsschlüssel oder null, wenn die Sicherung fehlschlug (dann kein Autosave bis zum Schließen) */
+export interface Recovered { raw: string; key: string | null; error: string }
+
+function initial(): { project: Project; recovered: Recovered | null } {
+  let raw: string | null = null;
   try {
-    const s = localStorage.getItem(KEY);
-    if (s) {
-      const p = upgradeProject(JSON.parse(s));
-      if (!validateProject(p)) return p as Project;
+    raw = localStorage.getItem(KEY);
+    if (raw) {
+      const p = upgradeProject(JSON.parse(raw));
+      const err = validateProject(p);
+      if (!err) return { project: p as Project, recovered: null };
+      throw new Error(err);
     }
-  } catch { /* ignorieren */ }
-  return createDemoProject();
+  } catch (e) {
+    if (raw) {
+      // Ungültigen Stand nicht vom nächsten Autosave überschreiben lassen
+      let key: string | null = `${KEY}-backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      try { localStorage.setItem(key, raw); } catch { key = null; }
+      return { project: createDemoProject(), recovered: { raw, key, error: (e as Error).message } };
+    }
+  }
+  return { project: createDemoProject(), recovered: null };
 }
 
 let lastCoalesce: string | undefined;
 let lastCoalesceTime = 0;
 
-const p0 = initial();
+const init = initial();
+const p0 = init.project;
 export const useStore = create<State>((set, get) => ({
   project: p0,
   past: [],
   future: [],
   tab: 'levels',
   saveError: false,
+  recovered: init.recovered,
+  dismissRecovered: () => set({ recovered: null }),
   sel: {
     metatile: 1, sprite: p0.sprites[0]?.id ?? '', frame: 0,
     formation: p0.formations[0]?.id ?? '', level: p0.levels[0]?.id ?? '', enemy: p0.enemyTypes[0]?.id ?? '', song: '', sfx: '',
@@ -74,20 +96,32 @@ export const useStore = create<State>((set, get) => ({
   },
   setTab: (tab) => set({ tab }),
   select: (s) => set({ sel: { ...get().sel, ...s } }),
-  load: (p) => set({
-    project: p, past: [], future: [],
-    sel: { metatile: 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '', level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '' },
-  }),
+  goto: ({ tab, id }) => {
+    const s: Partial<State['sel']> = id === undefined ? {} : tab === 'sprites' ? { sprite: id, frame: 0 }
+      : tab === 'levels' ? { level: id } : tab === 'formations' ? { formation: id } : tab === 'objects' ? { enemy: id } : {};
+    set({ tab, sel: { ...get().sel, ...s } });
+  },
+  /** Ersetzt das Projekt als normaler Undo-Schritt */
+  load: (p) => {
+    const { project, past } = get();
+    lastCoalesce = undefined;
+    set({
+      project: p, past: [...past.slice(-MAX_HISTORY), project], future: [],
+      sel: { metatile: 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '', level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '' },
+    });
+  },
 }));
 
 // Autosave (entprellt)
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 useStore.subscribe((s, prev) => {
-  if (s.project === prev.project) return;
+  if (s.project === prev.project && s.recovered === prev.recovered) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    const st = useStore.getState();
     let ok = true;
-    try { localStorage.setItem(KEY, JSON.stringify(s.project)); } catch { ok = false; }
+    if (st.recovered && !st.recovered.key) ok = false; // alter Stand liegt nur noch unter KEY
+    else try { localStorage.setItem(KEY, JSON.stringify(st.project)); } catch { ok = false; }
     if (ok === useStore.getState().saveError) useStore.setState({ saveError: !ok });
   }, 400);
 });

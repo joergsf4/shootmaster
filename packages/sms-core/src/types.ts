@@ -29,6 +29,20 @@ export interface SpriteGfx {
   frameDelay: number;
 }
 
+/** none: schießt nicht · straight: gegen die Scrollrichtung · aimed: auf den Spieler · fan3: drei Schüsse im Abstand von 22,5° um die Richtung zum Spieler */
+export type ShotPattern = 'none' | 'straight' | 'aimed' | 'fan3';
+export const SHOT_PATTERNS: ShotPattern[] = ['none', 'straight', 'aimed', 'fan3'];
+
+export interface EnemyShot {
+  pattern: ShotPattern;
+  /** Frames zwischen Schüssen (1..255), gezählt nur auf dem Bildschirm */
+  interval: number;
+  /** Hitbox = sichtbare Pixel des ersten Frames */
+  spriteId: string;
+  /** px/Frame (Raster 1/16, < 8) */
+  speed: number;
+}
+
 export interface EnemyType {
   id: string;
   name: string;
@@ -36,6 +50,7 @@ export interface EnemyType {
   hp: number;
   hitbox: Hitbox;
   score: number;
+  shot: EnemyShot;
 }
 
 export interface PlayerDef {
@@ -68,10 +83,20 @@ export interface Formation {
   offsets: Point[];
 }
 
+/** spawn: Formation erscheint · speed: Scrolltempo · music: Songwechsel · waitClear: Kamera hält, bis alle Gegner weg sind · checkpoint: Neustart nach Game Over ab hier */
+export type LevelEventType = 'spawn' | 'speed' | 'music' | 'waitClear' | 'checkpoint';
+export const LEVEL_EVENT_TYPES: LevelEventType[] = ['spawn', 'speed', 'music', 'waitClear', 'checkpoint'];
+
 export interface LevelEvent {
-  /** Scroll-Position (Pixel) bei der das Ereignis auslöst. */
+  /** Scroll-Position (Pixel) bei der das Ereignis auslöst. Gleiche Position: Reihenfolge der Liste. */
   pos: number;
-  formationId: string;
+  type: LevelEventType;
+  /** spawn */
+  formationId?: string;
+  /** speed: px/Frame (0 = Kamera steht) */
+  speed?: number;
+  /** music: Song-ID, leer = Stille */
+  musicId?: string;
 }
 
 export interface Level {
@@ -146,3 +171,4 @@ export const MAX_BG_TILES = 256;
 export const MAX_SPRITE_TILES = 192;
 export const MAX_ENEMIES = 12;
 export const MAX_SHOTS = 6;
+export const MAX_ENEMY_SHOTS = 16;

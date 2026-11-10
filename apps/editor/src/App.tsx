@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { buildRom, createDemoProject, engineBinary, MAX_BG_TILES, MAX_SPRITE_TILES, upgradeProject, validateProject, type Project } from '@sms/core';
+import { buildRom, createDemoProject, type CompileOptions, createTemplateProject, engineBinary, lintProject, MAX_BG_TILES, MAX_SPRITE_TILES, upgradeProject, validateProject, type Orientation, type Project } from '@sms/core';
 import { useStore, type Tab } from './store';
 import { PaletteEditor } from './editors/PaletteEditor';
 import { TileEditor } from './editors/TileEditor';
@@ -10,6 +10,7 @@ import { LevelEditor } from './editors/LevelEditor';
 import { SoundEditor } from './editors/SoundEditor';
 import { PlayModal } from './components/PlayModal';
 import { Tour } from './components/Tour';
+import { Problems, type Problem } from './components/Problems';
 import { downloadBlob } from './gfx';
 
 const TABS: [Tab, string][] = [
@@ -24,22 +25,37 @@ const TABS: [Tab, string][] = [
 
 const engine = engineBinary();
 const TOUR_KEY = 'sms-shmup-tour-done';
+/** Platzhalter-Schiffe der Vorlagen: gilt nicht als „gemalt“ */
+const PLACEHOLDER_SHIPS = (['h', 'v'] as const).map((o) => JSON.stringify(createTemplateProject(o).sprites[0].frames[0]));
 
-function tryBuild(p: Project, firstLevel?: string) {
+/** Testlauf: welches Level zuerst, ab welcher Kameraposition */
+type PlayOpts = { levelId?: string; startCam?: number };
+
+function tryBuild(p: Project, firstLevel?: string, opts?: CompileOptions) {
   try {
     const proj = firstLevel ? { ...p, levels: [...p.levels.filter((l) => l.id === firstLevel), ...p.levels.filter((l) => l.id !== firstLevel)] } : p;
-    return { ...buildRom(engine, proj), error: undefined };
+    return { ...buildRom(engine, proj, opts), error: undefined };
   } catch (e) {
     return { rom: undefined, data: undefined, error: (e as Error).message };
   }
 }
 
 export function App() {
-  const { project, tab, setTab, undo, redo, past, future, load, edit, saveError } = useStore();
-  const [play, setPlay] = useState<{ rom: Uint8Array; title: string } | null>(null);
+  const { project, tab, setTab, select, undo, redo, past, future, load, edit, saveError, recovered, dismissRecovered } = useStore();
+  const [play, setPlay] = useState<{ rom: Uint8Array; title: string; opts: PlayOpts } | null>(null);
+  const [invincible, setInvincible] = useState(false);
+  // shortcut: „gespielt“ gilt nur für diese Sitzung, bei Bedarf wie TOUR_KEY merken
+  const [played, setPlayed] = useState(false);
   const [tour, setTour] = useState(() => { try { return !localStorage.getItem(TOUR_KEY); } catch { return false; } });
   const endTour = () => { setTour(false); try { localStorage.setItem(TOUR_KEY, '1'); } catch { /* nur Komfort */ } };
   const build = useMemo(() => tryBuild(project), [project]);
+  const problems = useMemo(() => {
+    const d: Problem[] = lintProject(project);
+    // Compiler-Fehler ohne eigene Regel (z. B. Bank voll); bei Lint-Fehlern ist er meist dieselbe Ursache
+    if (build.error && !d.some((x) => x.severity === 'error')) d.unshift({ severity: 'error', msg: build.error });
+    return d;
+  }, [project, build]);
+  const blocker = problems.find((d) => d.severity === 'error')?.msg;
 
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
@@ -51,12 +67,27 @@ export function App() {
     return () => window.removeEventListener('keydown', kd);
   }, [play, undo, redo]);
 
-  const startPlay = (levelId?: string) => {
-    const b = tryBuild(project, levelId);
+  const startPlay = (opts: PlayOpts = {}, inv = invincible) => {
+    if (blocker) { alert('Erst diesen Fehler beheben:\n' + blocker); return; }
+    const b = tryBuild(project, opts.levelId, { startCam: opts.startCam, invincible: inv });
     if (b.error || !b.rom) { alert('ROM kann nicht gebaut werden:\n' + b.error); return; }
-    const name = levelId ? project.levels.find((l) => l.id === levelId)?.name : project.name;
-    setPlay({ rom: b.rom, title: name ?? '' });
+    const name = opts.levelId ? project.levels.find((l) => l.id === opts.levelId)?.name : project.name;
+    setPlay({ rom: b.rom, title: (name ?? '') + (opts.startCam ? ` · ab ${opts.startCam} px` : ''), opts });
+    setPlayed(true);
   };
+
+  const replace = (p: Project, what: string) => {
+    if (confirm(`Aktuelles Projekt durch ${what} ersetzen? (Rückgängig mit Strg+Z)`)) load(p);
+  };
+
+  const ship = project.sprites.find((s) => s.id === project.player.spriteId)?.frames[0];
+  const hasSpawn = (l: Project['levels'][number]) => l.events.some((e) => e.type === 'spawn');
+  const emptyLevel = project.levels.find((l) => !hasSpawn(l)) ?? project.levels[0];
+  const checklist: [boolean, string, () => void][] = [
+    [!!ship?.some((v) => v) && !PLACEHOLDER_SHIPS.includes(JSON.stringify(ship)), 'Schiff gemalt', () => { setTab('sprites'); select({ sprite: project.player.spriteId, frame: 0 }); }],
+    [project.levels.some(hasSpawn), 'Formation platziert', () => { setTab('levels'); if (emptyLevel) select({ level: emptyLevel.id }); }],
+    [played, 'einmal gespielt', () => startPlay()],
+  ];
 
   const fileName = project.name.replace(/[^\w\-äöüÄÖÜß ]+/g, '').trim().replace(/\s+/g, '_') || 'shmup';
   const st = build.data?.stats;
@@ -70,25 +101,45 @@ export function App() {
         <button disabled={!future.length} onClick={redo} title="Wiederholen (Strg+Y)">↷</button>
         <span className="grow" />
         {saveError && <span className="budget bad" title="Der Browser lässt kein Speichern zu (blockiert oder voll).">⚠ Nicht gespeichert – bitte Projekt exportieren</span>}
-        <button className="primary" onClick={() => startPlay()}>▶ Spielen</button>
-        <button data-tour="export" disabled={!build.rom} onClick={() => build.rom && downloadBlob(build.rom as Uint8Array<ArrayBuffer>, `${fileName}.sms`)}>⬇ ROM (.sms)</button>
+        <span title={blocker && `Erst beheben: ${blocker}`}><button className="primary" disabled={!!blocker} onClick={() => startPlay()}>▶ Spielen</button></span>
+        <span title={blocker && `Erst beheben: ${blocker}`}><button data-tour="export" disabled={!build.rom || !!blocker} onClick={() => build.rom && downloadBlob(build.rom as Uint8Array<ArrayBuffer>, `${fileName}.sms`)}>⬇ ROM (.sms)</button></span>
         <button onClick={() => downloadBlob(JSON.stringify(project), `${fileName}.shmup.json`, 'application/json')}>💾 Projekt</button>
         <label className="button">📂 Laden<input type="file" accept=".json" hidden onChange={async (e) => {
           const f = e.target.files?.[0];
+          e.target.value = '';
           if (!f) return;
           try {
             const p = upgradeProject(JSON.parse(await f.text()));
             const err = validateProject(p);
             if (err) throw new Error(err);
-            load(p as Project);
+            replace(p as Project, `„${f.name}“`);
           } catch (err) { alert('Datei konnte nicht geladen werden: ' + (err as Error).message); }
-          e.target.value = '';
         }} /></label>
-        <button onClick={() => { if (confirm('Aktuelles Projekt durch das Demo-Projekt ersetzen?')) load(createDemoProject()); }}>Demo</button>
+        <select value="" onChange={(e) => {
+          const v = e.target.value;
+          if (v === 'demo') replace(createDemoProject(), 'das Demo-Projekt');
+          else replace(createTemplateProject(v as Orientation), `ein leeres Spiel (${v === 'h' ? 'horizontal' : 'vertikal'})`);
+        }}>
+          <option value="" disabled hidden>Neu ▾</option>
+          <option value="h">Leer horizontal</option>
+          <option value="v">Leer vertikal</option>
+          <option value="demo">Demo</option>
+        </select>
         <button onClick={() => setTour(true)}>? Tutorial</button>
       </header>
+      {recovered && (
+        <div className="banner">
+          ⚠ Der gespeicherte Stand war ungültig ({recovered.error}) und wurde durch das Demo ersetzt.{' '}
+          {recovered.key ? `Er ist im Browser gesichert unter „${recovered.key}“.` : 'Sichern im Browser ging nicht – automatisches Speichern ist aus, bis du diesen Hinweis schließt.'}
+          <span className="grow" />
+          <button onClick={() => downloadBlob(recovered.raw, 'alter-stand.shmup.json', 'application/json')}>⬇ Alten Stand herunterladen</button>
+          <button onClick={dismissRecovered} title="Hinweis schließen">✕</button>
+        </div>
+      )}
       <nav>
         {TABS.map(([t, label]) => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{label}</button>)}
+        <span className="sep" />
+        {checklist.map(([done, label, go]) => <button key={label} className={`todo ${done ? 'done' : ''}`} onClick={go}>{done ? '☑' : '☐'} {label}</button>)}
         <span className="grow" />
         {st && (
           <span className="stats">
@@ -97,7 +148,7 @@ export function App() {
             <span className="budget">ROM {st.romSize / 1024} KB</span>
           </span>
         )}
-        {build.error && <span className="budget bad" title={build.error}>⚠ {build.error}</span>}
+        <Problems items={problems} />
       </nav>
       <main>
         {tab === 'palette' && <PaletteEditor />}
@@ -105,11 +156,12 @@ export function App() {
         {tab === 'sprites' && <SpriteEditor />}
         {tab === 'objects' && <ObjectsEditor />}
         {tab === 'formations' && <FormationEditor />}
-        {tab === 'levels' && <LevelEditor onPlay={startPlay} />}
+        {tab === 'levels' && <LevelEditor onPlay={(levelId, startCam) => { if (!play) startPlay({ levelId, startCam }); }} />}
         {tab === 'sound' && <SoundEditor />}
       </main>
       {tour && !play && <Tour onClose={endTour} />}
-      {play && <PlayModal rom={play.rom} title={play.title} onClose={() => setPlay(null)} />}
+      {play && <PlayModal rom={play.rom} title={play.title} onClose={() => setPlay(null)} onRestart={() => startPlay(play.opts)}
+        invincible={invincible} onInvincible={(v) => { setInvincible(v); startPlay(play.opts, v); }} />}
     </div>
   );
 }

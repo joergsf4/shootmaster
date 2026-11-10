@@ -14,6 +14,7 @@ MAPPER2     equ $FFFF
 
 MAXE        equ 12
 MAXS        equ 6
+MAXB        equ 16         ; Gegnerschüsse (Zweierpotenz: Rotation per and)
 OBJ         equ 16
 
 ; ---- globale Daten (Slot 2) ----
@@ -33,6 +34,7 @@ G_SND_SHOT  equ $802A
 G_SND_EXPL  equ $802B
 G_SND_HIT   equ $802C
 G_SOUNDTEST equ $802D
+G_INVINC    equ $802E      ; Test-ROM: Treffer kosten kein Leben
 
 ; ---- Spielerdefinition ----
 P_SPEED     equ 0
@@ -63,6 +65,21 @@ T_HBY       equ 2
 T_HBW       equ 3
 T_HBH       equ 4
 T_ANIM      equ 5
+T_SHOT      equ 8          ; → Schussdefinition (0 = schießt nicht)
+
+; ---- Schussdefinition (Gegnertyp) ----
+S_PATTERN   equ 0          ; 1 gerade, 2 gezielt, 3 Fächer (3, gezielt)
+S_RATE      equ 1          ; Frames zwischen Schüssen
+S_ANIM      equ 2
+S_HBX       equ 4
+S_HBY       equ 5
+S_HBW       equ 6
+S_HBH       equ 7
+S_OFFX      equ 8          ; Gegner (oben links) → Schuss (oben links), int8
+S_OFFY      equ 9
+S_AIMX      equ 10         ; Zielversatz: Spieler-Hitbox-Mitte − Schuss-Hitbox-Mitte, int8
+S_AIMY      equ 11
+S_VEL       equ 12         ; 16 Richtungen × (vx, vy) je 16 Bit, 8.8 mit Vorzeichen; 0 = rechts, 4 = unten
 
 ; ---- Level-Header (Slot 1) ----
 L_ORIENT    equ $4000
@@ -81,6 +98,7 @@ L_STARTX    equ $4023
 L_STARTY    equ $4024
 L_MUSIC     equ $4025
 L_SOLID     equ $4026
+L_STARTCAM  equ $4028
 
 ; ---- Objektstruktur (16 Byte) ----
 O_STATE     equ 0      ; 0 frei, 1 wartet, 2 aktiv, 3 explodiert
@@ -96,6 +114,13 @@ O_HP        equ 12
 O_ATICK     equ 13
 O_AFRAME    equ 14
 O_TIMER     equ 15
+
+; ---- Gegnerschuss (16 Byte; O_STATE, O_X/O_Y = Pixel, Animation wie Objekt) ----
+B_XF        equ 1          ; Nachkommastellen x
+B_DEF       equ 6          ; → Schussdefinition
+B_YF        equ 8          ; Nachkommastellen y
+B_VX        equ 9          ; Tempo x, 8.8 mit Vorzeichen
+B_VY        equ 11         ; Tempo y
 
 ; ---- RAM ----
 vblank      equ $C000
@@ -140,6 +165,14 @@ shX         equ $C034
 shY         equ $C035
 shW         equ $C036
 shH         equ $C037
+waitClr     equ $C038      ; ≠ 0: Kamera hält, bis alle Gegner-Slots frei sind
+curSpeed    equ $C039      ; aktuelles Scrolltempo 4.4
+curSong     equ $C03A      ; aktueller Song ($FF = Stille)
+ckSpeed     equ $C03B      ; Checkpoint: Tempo, Song, Ereigniszeiger (0 = keiner), Kamera
+ckSong      equ $C03C
+ckEv        equ $C050
+ckCam       equ $C052
+bulCount    equ $C054      ; aktive Gegnerschüsse (0: Schleifen über den Pool entfallen)
 musPtr      equ $C040      ; Song (0 = keiner)
 musData     equ $C042      ; Schritte Kanal 0
 musLen      equ $C044
@@ -157,6 +190,7 @@ satY        equ $C100
 satXT       equ $C140
 enemies     equ $C200
 shots       equ $C300
+bullets     equ $C400      ; MAXB × 16 Byte = genau eine 256-Byte-Seite (Schleifen laufen über das Low-Byte)
 
 ; =====================================================================
     org $0000
@@ -306,26 +340,28 @@ startLevel:
     ld (mtBase),hl
     ld hl,(L_MAP)
     ld (mapBase),hl
+    ; Neustart-Stand: ohne Checkpoint Levelanfang bzw. Startkamera
+    ld hl,(ckEv)
+    ld a,h
+    or l
+    jr nz,haveCk
     ld hl,(L_EV)
+    ld (ckEv),hl
+    ld hl,(L_STARTCAM)
+    ld (ckCam),hl
+    ld a,(L_SPEED)
+    ld (ckSpeed),a
+    ld a,(L_MUSIC)
+    ld (ckSong),a
+haveCk:
+    ld hl,(ckEv)
     ld (evPtr),hl
     ld hl,(L_CAMMAX)
     ld (camMax),hl
     ld hl,(L_SOLID)
     ld (solidBase),hl
-    ld a,(L_SPEED)
-    ld b,a
-    rrca
-    rrca
-    rrca
-    rrca
-    and $0F
-    ld (speedInt),a
-    ld a,b
-    add a,a
-    add a,a
-    add a,a
-    add a,a
-    ld (speedFrac),a
+    ld a,(ckSpeed)
+    call setSpeed
     ld a,(L_STARTX)
     ld (player+O_X),a
     ld a,(L_STARTY)
@@ -354,16 +390,18 @@ clrNt:
     ld a,b
     or c
     jr nz,clrNt
-    ; Objekte löschen
+    ; Objekte löschen (Gegner, Schüsse, Gegnerschüsse: $C200-$C4FF)
     ld hl,enemies
     ld de,enemies+1
-    ld bc,$1FF
+    ld bc,$2FF
     ld (hl),0
     ldir
-    xor a
-    ld hl,0
+    ld hl,(ckCam)           ; 0 = Levelanfang, sonst „Ab hier spielen“ bzw. Checkpoint
     ld (camPos),hl
+    xor a
     ld (camFrac),a
+    ld (waitClr),a
+    ld (bulCount),a
     ld (streamPend),a
     ld (cooldown),a
     ld (endTimer),a
@@ -383,34 +421,48 @@ clrNt:
     ld a,(ix+P_LIVES)
     ld (lives),a
 haveLives:
-    ; Startbild aufbauen
+    ; Startbild ab Tile camPos/8 aufbauen (wie nach dem Scrollen dorthin)
     ld a,(orient)
     or a
     jr nz,initV
-    xor a
+    ld a,(camPos)           ; horizontal: scrollReg = -camPos
+    neg
     ld (scrollReg),a
-    ld hl,0
+    call camTile
+    ld b,33
 initHLoop:
+    push bc
     push hl
     call drawColumn
     pop hl
+    pop bc
     inc hl
-    ld a,l
-    cp 33
-    jr nz,initHLoop
+    djnz initHLoop
     jr initDone
 initV:
+    ld hl,(camPos)          ; vertikal: scrollReg = (32 - camPos) mod 224
+    ld de,224
+initVMod:
+    or a
+    sbc hl,de
+    jr nc,initVMod
+    add hl,de
     ld a,32
+    sub l
+    jr nc,initVSet
+    add a,224
+initVSet:
     ld (scrollReg),a
-    ld hl,0
+    call camTile
+    ld b,27
 initVLoop:
+    push bc
     push hl
     call drawRow
     pop hl
+    pop bc
     inc hl
-    ld a,l
-    cp 27
-    jr nz,initVLoop
+    djnz initVLoop
 initDone:
     ; Scrollregister
     xor a
@@ -424,7 +476,7 @@ initDone:
     call setScroll
     call buildSat
     call uploadSat
-    ld a,(L_MUSIC)
+    ld a,(ckSong)
     call musicStart
     ld a,$E2                ; Display an, VBlank-IRQ, 8x16-Sprites
     out (VDP_CTRL),a
@@ -448,7 +500,9 @@ mainLoop:
     call updatePlayer
     call updateShots
     call updateEnemies
+    call updateBullets
     call collide
+    call bulletCollide
     call bgCollide
     call checkLevelEnd
     call buildSat
@@ -507,6 +561,16 @@ ctvLoop:
     jr nz,ctvLoop
     ret
 
+camTile:                    ; HL = camPos / 8
+    ld hl,(camPos)
+    srl h
+    rr l
+    srl h
+    rr l
+    srl h
+    rr l
+    ret
+
 mul32:                      ; HL *= 32
     add hl,hl
     add hl,hl
@@ -563,6 +627,9 @@ uploadSat:
 ; Scrolling
 ; ---------------------------------------------------------------------
 updateCamera:
+    ld a,(waitClr)
+    or a
+    ret nz
     ld a,(camFrac)
     ld b,a
     ld a,(speedFrac)
@@ -799,16 +866,90 @@ processEvents:
     pop hl
     ret c                   ; noch nicht erreicht
     inc hl
+    ld c,(hl)               ; Typ
+    inc hl
+    ld b,(hl)               ; Parameter
+    inc hl
+    ld a,c
+    cp 4                    ; Warten, bis alle Gegner weg sind
+    jr nz,peRun
+    push hl
+    push bc
+    call anyEnemy
+    pop bc
+    pop hl
+    ld (waitClr),a
+    ret nz                  ; Ereignis bleibt stehen, Kamera hält
+peRun:
+    ld (evPtr),hl
+    ld a,c
+    dec a
+    cp 5
+    jr nc,processEvents     ; unbekannter Typ: überspringen
+    ld hl,processEvents     ; Rücksprung: nächstes Ereignis
+    push hl
+    add a,a
+    ld e,a
+    ld d,0
+    ld hl,peTable
+    add hl,de
     ld a,(hl)
     inc hl
-    ld b,(hl)
-    inc hl
-    ld (evPtr),hl
-    cp 1
-    jr nz,processEvents
+    ld h,(hl)
+    ld l,a
+    ld a,b                  ; A = Parameter
+    jp (hl)
+
+peTable:
+    dw spawnFormation       ; 1 Formation (lokaler Index)
+    dw setSpeed             ; 2 Scrolltempo 4.4 (0 = Kamera steht)
+    dw musicStart           ; 3 Song ($FF = Stille)
+    dw peDone               ; 4 Warten (oben erledigt)
+    dw checkpoint           ; 5 Checkpoint
+peDone:
+    ret
+
+; Neustart nach Game Over ab hier; Ereignisse danach laufen erneut
+checkpoint:
+    ld hl,(evPtr)
+    ld (ckEv),hl
+    ld hl,(camPos)
+    ld (ckCam),hl
+    ld a,(curSpeed)
+    ld (ckSpeed),a
+    ld a,(curSong)
+    ld (ckSong),a
+    ret
+
+; A = Tempo 4.4 → speedInt/speedFrac
+setSpeed:
+    ld (curSpeed),a
+    ld b,a
+    rrca
+    rrca
+    rrca
+    rrca
+    and $0F
+    ld (speedInt),a
     ld a,b
-    call spawnFormation
-    jr processEvents
+    add a,a
+    add a,a
+    add a,a
+    add a,a
+    ld (speedFrac),a
+    ret
+
+anyEnemy:                   ; NZ (A = Zustand) = mind. ein Gegner-Slot belegt
+    ld hl,enemies+O_STATE
+    ld de,OBJ
+    ld b,MAXE
+aeLoop:
+    ld a,(hl)
+    or a
+    ret nz
+    add hl,de
+    djnz aeLoop
+    ret
 
 ; A = lokaler Formationsindex
 spawnFormation:
@@ -1140,7 +1281,7 @@ ueLoop:
     cp 2
     jr z,ueMove
     cp 3
-    jr z,ueExpl
+    jp z,ueExpl
     jp ueNext
 ueWait:
     ld a,(ix+O_DELAY)
@@ -1192,6 +1333,14 @@ ueStep:
 ueAnim:
     ld a,(ix+O_TYPE)
     call typePtr
+    push hl
+    ld de,T_SHOT
+    add hl,de
+    ld a,(hl)
+    inc hl
+    or (hl)
+    call nz,enemyFire       ; HL = Typ + T_SHOT + 1
+    pop hl
     ld de,T_ANIM
     add hl,de
     ld a,(hl)
@@ -1213,6 +1362,338 @@ ueNext:
     dec b
     jp nz,ueLoop
     ret
+
+; ---------------------------------------------------------------------
+; Gegnerschüsse
+; ---------------------------------------------------------------------
+; IX = aktiver Gegner, HL = Typ + T_SHOT + 1 (Zeiger ≠ 0). O_DELAY zählt im Zustand 2 die Feuerpause herunter (nur auf dem Bildschirm).
+enemyFire:
+    ld d,(hl)
+    dec hl
+    ld e,(hl)
+    ex de,hl
+    ld a,(ix+O_X+1)
+    or (ix+O_Y+1)
+    ret nz
+    ld (tmpPtr),hl
+    ld a,(ix+O_DELAY)
+    or a
+    jr z,efReload           ; gerade erschienen: erst nach einer vollen Pause
+    dec (ix+O_DELAY)
+    ret nz
+    call efShoot
+    ld hl,(tmpPtr)
+efReload:
+    inc hl                  ; S_RATE
+    ld a,(hl)
+    ld (ix+O_DELAY),a
+    ret
+
+; IX = Gegner, (tmpPtr) = Schussdefinition
+efShoot:
+    ld iy,(tmpPtr)
+    ld a,(iy+S_OFFX)        ; Startposition; außerhalb des Bildschirms → kein Schuss
+    call sext
+    ld l,(ix+O_X)
+    ld h,0
+    add hl,de
+    ld a,h
+    or a
+    ret nz
+    ld a,l
+    ld (tmpX),a
+    ld a,(iy+S_OFFY)
+    call sext
+    ld l,(ix+O_Y)
+    ld h,0
+    add hl,de
+    ld a,h
+    or a
+    ret nz
+    ld a,l
+    cp 192
+    ret nc
+    ld (tmpY),a
+    ld a,(iy+S_PATTERN)
+    cp 1
+    jr nz,efAim
+    ld a,(orient)           ; gerade: gegen die Scrollrichtung (H nach links, V nach unten)
+    or a
+    ld a,8
+    jr z,spawnBullet
+    ld a,4
+    jr spawnBullet
+efAim:
+    ld b,a
+    push bc
+    call aimDir
+    pop bc
+    ld c,a
+    ld a,b
+    cp 3
+    ld a,c
+    jr nz,spawnBullet       ; gezielt: ein Schuss
+    push bc                 ; Fächer: drei Schüsse im Abstand von 22,5°
+    call spawnBullet
+    pop bc
+    ld a,c
+    dec a
+    and 15
+    push bc
+    call spawnBullet
+    pop bc
+    ld a,c
+    inc a
+    and 15
+    ; weiter in spawnBullet
+
+; A = Richtung 0..15, IY = Schussdefinition, Start tmpX/tmpY. Pool voll → Schuss entfällt.
+spawnBullet:
+    ld c,a
+    ld hl,bullets
+    ld de,OBJ
+    ld b,MAXB
+sbFind:
+    ld a,(hl)
+    or a
+    jr z,sbFound
+    add hl,de
+    djnz sbFind
+    ret
+sbFound:
+    push ix
+    push hl
+    pop ix
+    ld (ix+O_STATE),2
+    ld a,(tmpX)
+    ld (ix+O_X),a
+    ld a,(tmpY)
+    ld (ix+O_Y),a
+    xor a
+    ld (ix+O_X+1),a
+    ld (ix+O_Y+1),a
+    ld (ix+O_ATICK),a
+    ld (ix+O_AFRAME),a
+    ld a,$80                ; halber Pixel: symmetrisch gerundet
+    ld (ix+B_XF),a
+    ld (ix+B_YF),a
+    push iy
+    pop hl
+    ld (ix+B_DEF),l
+    ld (ix+B_DEF+1),h
+    ld de,S_VEL
+    add hl,de
+    ld a,c
+    add a,a
+    add a,a
+    ld e,a
+    ld d,0
+    add hl,de
+    ld a,(hl)
+    ld (ix+B_VX),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VX+1),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VY),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VY+1),a
+    pop ix
+    ld hl,bulCount
+    inc (hl)
+    ret
+
+; IY = Schussdefinition, Schuss bei tmpX/tmpY → A = Richtung 0..15 zur Spieler-Hitbox (Oktant über dx/dy)
+aimDir:
+    ld a,(player+O_X)
+    ld b,a
+    ld a,(tmpX)
+    ld c,a
+    ld a,(iy+S_AIMX)
+    call aimDelta
+    push hl
+    ld a,(player+O_Y)
+    ld b,a
+    ld a,(tmpY)
+    ld c,a
+    ld a,(iy+S_AIMY)
+    call aimDelta           ; HL = dy
+    pop de                  ; DE = dx
+    ld c,0                  ; Bit 0: dx < 0, Bit 1: dy < 0
+    bit 7,d
+    jr z,adXPos
+    inc c
+    xor a
+    sub e
+    ld e,a
+    sbc a,a
+    sub d
+    ld d,a
+adXPos:
+    bit 7,h
+    jr z,adScale
+    set 1,c
+    xor a
+    sub l
+    ld l,a
+    sbc a,a
+    sub h
+    ld h,a
+adScale:                    ; beide Beträge auf 8 Bit bringen
+    ld a,d
+    or h
+    jr z,adCmp
+    srl d
+    rr e
+    srl h
+    rr l
+    jr adScale
+adCmp:                      ; E = |dx|, L = |dy|
+    push bc
+    ld a,l
+    cp e
+    jr c,adFlat
+    jr z,adFlat
+    ld a,e                  ; steil: von der y-Achse aus messen
+    ld e,l
+    ld l,a
+    call octK
+    neg
+    add a,4
+    jr adQuad
+adFlat:
+    call octK
+adQuad:                     ; A = Schritte von der x-Achse (0..4) → Quadrant
+    pop bc
+    ld b,a
+    ld a,c
+    or a
+    ld a,b
+    ret z                   ; rechts unten: k
+    dec c
+    jr nz,adQ2
+    ld a,8                  ; links unten: 8 - k
+    sub b
+    ret
+adQ2:
+    dec c
+    jr nz,adQ3
+    ld a,16                 ; rechts oben: 16 - k
+    sub b
+    and 15
+    ret
+adQ3:
+    ld a,8                  ; links oben: 8 + k
+    add a,b
+    ret
+
+aimDelta:                   ; HL = B - C + sext(A)
+    call sext
+    ld l,b
+    ld h,0
+    add hl,de
+    ld e,c
+    ld d,0
+    or a
+    sbc hl,de
+    ret
+
+; E = größere, L = kleinere Komponente → A = 0 (< 11,25°: klein×5 < groß), 1 (< 33,75°: klein×3 < groß×2), sonst 2
+octK:
+    ld h,0
+    ld d,0
+    ld b,h
+    ld c,l
+    add hl,hl
+    add hl,hl
+    add hl,bc
+    or a
+    sbc hl,de
+    ld a,0
+    ret c
+    ld h,b
+    ld l,c
+    add hl,hl
+    add hl,bc
+    ex de,hl
+    add hl,hl
+    ex de,hl
+    or a
+    sbc hl,de
+    ld a,1
+    ret c
+    inc a
+    ret
+
+; shortcut: Gegnerschüsse fliegen durch tödliche Pinsel; ausbauen, wenn Level mit Wänden das brauchen
+updateBullets:
+    ld a,(bulCount)
+    or a
+    ret z
+    ld hl,bullets
+ubLoop:
+    ld a,(hl)
+    or a
+    call nz,ubMove
+    ld a,l
+    add a,OBJ
+    ld l,a
+    jr nz,ubLoop            ; Low-Byte läuft nach 16 Schüssen auf 0
+    ret
+ubMove:                     ; HL = aktiver Schuss (bleibt erhalten)
+    push hl
+    push hl
+    pop ix
+    ld l,(ix+B_XF)
+    ld h,(ix+O_X)
+    ld e,(ix+B_VX)
+    ld d,(ix+B_VX+1)
+    call bulletStep
+    jr c,ubFree
+    ld (ix+B_XF),l
+    ld (ix+O_X),h
+    ld l,(ix+B_YF)
+    ld h,(ix+O_Y)
+    ld e,(ix+B_VY)
+    ld d,(ix+B_VY+1)
+    call bulletStep
+    jr c,ubFree
+    ld a,h
+    cp 192
+    jr nc,ubFree
+    ld (ix+B_YF),l
+    ld (ix+O_Y),h
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    inc hl
+    inc hl                  ; S_ANIM
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    call animate
+    pop hl
+    ret
+ubFree:
+    ld (ix+O_STATE),0
+    ld hl,bulCount
+    dec (hl)
+    pop hl
+    ret
+
+; HL = Position 8.8, DE = Tempo 8.8 mit Vorzeichen → HL += DE, Carry = Bildschirm verlassen
+bulletStep:
+    bit 7,d
+    jr nz,bstNeg
+    add hl,de
+    ret                     ; Übertrag = rechts/unten hinaus
+bstNeg:
+    add hl,de
+    ccf
+    ret                     ; kein Übertrag = links/oben hinaus
+
 
 ; ---------------------------------------------------------------------
 ; Kollision
@@ -1331,6 +1812,20 @@ coShotNext:
     ld a,(player+O_TIMER)
     or a
     jr nz,coNext
+    call playerBox
+    call boxHit
+    jr nc,coNext
+    call playerHit
+coNext:
+    ld de,OBJ
+    add ix,de
+    pop bc
+    dec b
+    jp nz,coLoop
+    ret
+
+; IY = Spielerdefinition → shX..shH (absolute Spieler-Hitbox)
+playerBox:
     ld a,(player+O_X)
     add a,(iy+P_HBX)
     ld (shX),a
@@ -1341,15 +1836,55 @@ coShotNext:
     ld (shW),a
     ld a,(iy+P_HBH)
     ld (shH),a
+    ret
+
+; Gegnerschüsse gegen den Spieler (dieselbe Box-Routine wie die Gegnerkörper)
+bulletCollide:
+    ld a,(bulCount)
+    or a
+    ret z
+    ld a,(player+O_TIMER)   ; unverwundbar → kein Treffer
+    or a
+    ret nz
+    ld iy,(G_PLAYER)
+    call playerBox
+    ld hl,bullets
+bkLoop:
+    ld a,(hl)
+    or a
+    jr z,bkNext
+    push hl
+    push hl
+    pop ix
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    ld de,S_HBX
+    add hl,de
+    ld a,(ix+O_X)
+    add a,(hl)
+    ld (hbX),a
+    inc hl
+    ld a,(ix+O_Y)
+    add a,(hl)
+    ld (hbY),a
+    inc hl
+    ld a,(hl)
+    ld (hbW),a
+    inc hl
+    ld a,(hl)
+    ld (hbH),a
     call boxHit
-    jr nc,coNext
-    call playerHit
-coNext:
-    ld de,OBJ
-    add ix,de
-    pop bc
-    dec b
-    jp nz,coLoop
+    pop hl
+    jr nc,bkNext
+    ld (hl),0
+    ld hl,bulCount
+    dec (hl)
+    jp playerHit            ; ein Treffer pro Frame, danach ist der Spieler unverwundbar
+bkNext:
+    ld a,l
+    add a,OBJ
+    ld l,a
+    jr nz,bkLoop
     ret
 
 ; ---------------------------------------------------------------------
@@ -1514,6 +2049,9 @@ playerHit:
     call playSfx
     ld a,120
     ld (player+O_TIMER),a
+    ld a,(G_INVINC)         ; unverwundbar: blinken, aber kein Leben weg
+    or a
+    ret nz
     ld a,(lives)
     dec a
     ld (lives),a
@@ -1527,20 +2065,12 @@ checkLevelEnd:
     or a
     sbc hl,de
     ret c
-    ; noch Gegner aktiv?
-    ld ix,enemies
-    ld de,OBJ
-    ld b,MAXE
-cleLoop:
-    ld a,(ix+O_STATE)
-    or a
+    call anyEnemy           ; noch Gegner aktiv?
     jr z,cleFree
     xor a
     ld (endTimer),a
     ret
 cleFree:
-    add ix,de
-    djnz cleLoop
     ld a,(endTimer)
     inc a
     ld (endTimer),a
@@ -1556,6 +2086,8 @@ cleFree:
     xor a
 cleSet:
     ld (levelIdx),a
+    ld hl,0                 ; Checkpoint gilt nur im eigenen Level
+    ld (ckEv),hl
     jp startLevel
 
 ; ---------------------------------------------------------------------
@@ -1591,6 +2123,44 @@ bsShotNext:
     add ix,de
     pop bc
     djnz bsShotLoop
+    ; Gegnerschüsse vor den Gegnern (unsichtbare Schüsse wären unfair), Start rotiert: zu viele in einer Zeile flackern
+    ld a,(bulCount)
+    or a
+    jr z,bsBulDone
+    ld a,(frame)
+    add a,a
+    add a,a
+    add a,a
+    add a,a
+    ld l,a                  ; (frame mod 16) × 16
+    ld h,bullets/256
+    ld b,MAXB
+bsBulLoop:
+    ld a,(hl)
+    or a
+    jr z,bsBulNext
+    push bc
+    push hl
+    push hl
+    pop ix
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    inc hl
+    inc hl                  ; S_ANIM
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    call curFrame
+    call drawMeta
+    pop hl
+    pop bc
+bsBulNext:
+    ld a,l
+    add a,OBJ
+    ld l,a
+    djnz bsBulLoop
+bsBulDone:
     ; Gegner mit rotierender Startposition (Flackern statt Verschlucken)
     ld a,(rot)
     inc a
@@ -1663,19 +2233,27 @@ drawMeta:
     ld a,b
     or a
     ret z
+    exx                     ; Schattenregister je Objekt: BC' = X, DE' = Y + 16
+    ld c,(ix+O_X)
+    ld b,(ix+O_X+1)
+    ld l,(ix+O_Y)
+    ld h,(ix+O_Y+1)
+    ld de,16
+    add hl,de
+    ex de,hl
+    exx
 dmPart:
     ld a,(sprCount)
     cp 64
     ret z
-    ld a,(hl)
+    ld a,(hl)               ; dy
     inc hl
-    push hl
-    call sext
-    ld l,(ix+O_Y)
-    ld h,(ix+O_Y+1)
-    add hl,de
-    ld de,16
-    add hl,de
+    exx
+    ld l,a
+    add a,a
+    sbc a,a
+    ld h,a
+    add hl,de               ; Y + dy + 16
     ld a,h
     or a
     jr nz,dmRejY
@@ -1683,20 +2261,22 @@ dmPart:
     cp 208
     jr nc,dmRejY
     sub 17
+    exx
     ld c,a                  ; SAT-Y
-    pop hl
-    ld a,(hl)
+    ld a,(hl)               ; dx
     inc hl
-    push hl
-    call sext
-    ld l,(ix+O_X)
-    ld h,(ix+O_X+1)
-    add hl,de
+    exx
+    ld l,a
+    add a,a
+    sbc a,a
+    ld h,a
+    add hl,bc               ; X + dx
     ld a,h
     or a
+    ld a,l
+    exx
     jr nz,dmRejX
-    ld d,l                  ; X
-    pop hl
+    ld d,a                  ; X
     ld e,(hl)               ; Tile
     inc hl
     push hl
@@ -1716,13 +2296,12 @@ dmPart:
     djnz dmPart
     ret
 dmRejY:
-    pop hl
+    exx
     inc hl
     inc hl
     djnz dmPart
     ret
 dmRejX:
-    pop hl
     inc hl
     djnz dmPart
     ret
@@ -1736,6 +2315,7 @@ soundUpdate:
 
 ; A = Songindex oder $FF (Stille)
 musicStart:
+    ld (curSong),a
     ld b,a
     ld a,$9F
     out (PSG),a

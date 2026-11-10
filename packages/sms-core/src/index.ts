@@ -4,8 +4,8 @@ export * from './path';
 export * from './compile';
 export * from './rom';
 export * from './sound';
-export { createDemoProject, upgradeProject } from './demo';
-export { validateProject } from './validate';
+export { createDemoProject, createTemplateProject, noShot, upgradeProject } from './demo';
+export * from './validate';
 export { ENGINE_BASE64 } from './generated/engine';
 
 import { ENGINE_BASE64 } from './generated/engine';

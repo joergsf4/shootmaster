@@ -1,2 +1,3 @@
 import { defineConfig } from 'vitest/config';
-export default defineConfig({ test: { include: ['packages/*/test/**/*.test.ts'] } });
+// Headless-ROM-Tests emulieren tausende Frames und brauchen mehr als die 5 s Standard
+export default defineConfig({ test: { include: ['packages/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'], testTimeout: 30_000 } });

@@ -34,6 +34,7 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 | 28 | 2 | → Periodentabelle: 48 Wörter, Noten C3 … H6 (10-Bit-PSG-Periode) |
 | 2A–2C | 3 | Effektindex für Schuss, Explosion, Spieler getroffen ($FF = still) |
 | 2D | 1 | Soundtest: 0 = Spiel; 1+n = nur Song n; $80+n = nur Effekt n (Vorschau im Editor) |
+| 2E | 1 | Unverwundbar (Test-ROM aus dem Editor): ≠ 0 = Treffer kosten kein Leben, der Spieler blinkt nur |
 
 ### Animation
 `count(1) delay(1) frame[count](2 = Zeiger auf Metasprite)`
@@ -56,7 +57,22 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 | 21 | Leben |
 
 ### Gegnertyp (16 Byte)
-`hp(1) hitbox(4) animPtr(2) score(1) reserviert(8)`
+`hp(1) hitbox(4) animPtr(2) score(1) schussPtr(2) reserviert(6)`
+
+`schussPtr` zeigt auf die Schussdefinition des Typs, 0 = schießt nicht.
+
+### Schussdefinition (44 Byte)
+| Offset | Inhalt |
+|---|---|
+| 0 | Muster: 1 = gerade (gegen die Scrollrichtung: horizontal nach links, vertikal nach unten), 2 = gezielt, 3 = Fächer (3 Schüsse: zum Spieler und ±22,5°) |
+| 1 | Feuerpause in Frames (1–255). Gezählt wird nur, solange der Gegner im Bild ist; der erste Schuss kommt eine volle Pause nach dem Erscheinen |
+| 2 | → Schussanimation |
+| 4–7 | Hitbox x, y, w, h relativ zum Schuss-Sprite (der Compiler nimmt die sichtbaren Pixel des ersten Frames) |
+| 8, 9 | Startversatz x, y (int8): Gegner oben links → Schuss oben links, sodass der Schuss in der Gegnermitte startet |
+| 10, 11 | Zielversatz x, y (int8): Mitte der Spieler-Hitbox minus Mitte der Schuss-Hitbox |
+| 12 | 16 Richtungen × `vx(2) vy(2)`: Tempo in 1/256 px/Frame (8.8 mit Vorzeichen). Richtung i = i × 22,5°, 0 = rechts, 4 = unten |
+
+„Gezielt“ bestimmt die Richtung aus dx/dy zur Spieler-Hitbox: Oktant über die Vorzeichen, dann 3 Stufen je Oktant (kleiner × 5 < größer → Achse, kleiner × 3 < größer × 2 → 22,5°, sonst 45°).
 
 ## 3. Level-Header (Level-Bank, `$4000`)
 
@@ -64,7 +80,7 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 |---|---|---|
 | 00 | 1 | Orientierung: 0 = horizontal, 1 = vertikal |
 | 01 | 2 | Länge in Metatiles entlang der Scrollachse |
-| 03 | 1 | Scrolltempo, Festkomma 4.4 (px/Frame) |
+| 03 | 1 | Scrolltempo, Festkomma 4.4 (px/Frame). Bei Startkamera > 0 gilt das Tempo des letzten weggelassenen Tempo-Ereignisses |
 | 04 | 16 | BG-Palette |
 | 14 | 2 | → Metatiles (je 8 Byte: 4 Name-Table-Wörter OL, OR, UL, UR) |
 | 16 | 2 | → Karte |
@@ -75,8 +91,9 @@ Die ROM-Größe wird auf eine Zweierpotenz aufgerundet (mindestens 64 KB). Der H
 | 1F | 2 | Anzahl BG-Tiles (max. 256) |
 | 21 | 2 | maximale Kameraposition (Level-Ende) |
 | 23, 24 | 1+1 | Startposition des Spielers x, y |
-| 25 | 1 | Songindex der Levelmusik ($FF = Stille) |
+| 25 | 1 | Songindex der Levelmusik ($FF = Stille). Bei Startkamera > 0 wie Offset 03 der Song des letzten weggelassenen Musik-Ereignisses |
 | 26 | 2 | → Kollisionstabelle: 1 Byte je Pinsel (1 = tödlich: Spieler verliert ein Leben, Schüsse verschwinden) |
+| 28 | 2 | Startkamera in Pixeln (0 = Levelanfang). Der Editor setzt sie für „Ab hier spielen“ beim ersten Level; Ereignisse davor lässt der Compiler weg. Auch nach Game Over beginnt das Level wieder hier, solange kein Checkpoint erreicht ist. |
 
 ### Karte
 Ein Byte (Metatile-Index) pro Zelle.
@@ -84,7 +101,21 @@ Ein Byte (Metatile-Index) pro Zelle.
 - **Vertikal:** zeilenweise mit 16 Spalten pro Zeile; Zeile 0 ist der Start, also der untere Bildrand.
 
 ### Ereignis
-`pos(2) typ(1) param(1)`. `pos` ist die Kameraposition in Pixeln, die Liste ist danach sortiert und endet mit `pos = $FFFF`. Typ 1 = Formation spawnen, `param` = lokaler Formationsindex.
+`pos(2) typ(1) param(1)`. `pos` ist die Kameraposition in Pixeln, die Liste ist danach sortiert und endet mit `pos = $FFFF`. Ereignisse mit gleicher Position laufen im selben Frame in Listenreihenfolge ab.
+
+| Typ | Bedeutung | `param` |
+|---|---|---|
+| 1 | Formation spawnen | lokaler Formationsindex |
+| 2 | Scrolltempo setzen | Tempo 4.4 wie Header `03`; 0 = Kamera steht (spätere Ereignisse lösen dann nicht mehr aus) |
+| 3 | Musik wechseln | Songindex, $FF = Stille |
+| 4 | Warten | 0. Die Kamera und alle folgenden Ereignisse halten an, bis alle 12 Gegner-Slots frei sind (auch Explosionen) |
+| 5 | Checkpoint | 0. Merkt Ereigniszeiger, Kamera, Tempo und Song. Game Over startet das Level dort neu; die Ereignisse danach laufen erneut. Beim Levelwechsel verfällt der Checkpoint |
+
+Unbekannte Typen überspringt die Engine.
+
+Im Projekt-JSON hat jeder Gegnertyp `shot: { pattern, interval, spriteId, speed }` mit `pattern` = `none`, `straight`, `aimed` oder `fan3`, `interval` in Frames und `speed` in px/Frame. Gegnertypen ohne `shot` (ältere Projekte) bekommen über `upgradeProject` `pattern: 'none'` (das Sprite ist dann das des Spielerschusses).
+
+Im Projekt-JSON hat jedes Ereignis `pos` und `type` (`spawn`, `speed`, `music`, `waitClear`, `checkpoint`) sowie je nach Typ `formationId`, `speed` (px/Frame) oder `musicId` (leer = Stille). Ereignisse ohne `type` (ältere Projekte) wandelt `upgradeProject` in `spawn` um.
 
 ### Formation
 `typ(1) startX(int16) startY(int16) pfadPtr(2) anzahl(1)`, dann pro Mitglied `delay(1) dx(int8) dy(int8)`.
@@ -104,12 +135,17 @@ Schrittbyte: `0` halten · `1` aus · `n ≥ 2` Note `n-2` (Ton: Index in Period
 `kanal(1)` (2 = Ton 3, 3 = Rauschen), `frames(1)`, dann je Frame `wert(2) dämpfung(1)` (wert = Periode bzw. Rauschmodus). Ein Effekt übernimmt seinen Kanal; danach erhält der Kanal die Lautstärke der Musik zurück.
 
 ## 4. Engine-Grenzen (v1)
-- 12 Gegner, 6 Spielerschüsse, 64 Hardware-Sprites
-- Wenn mehr als 8 Sprites in einer Bildzeile liegen, rotiert die Gegner-Reihenfolge jeden Frame, sodass es flackert statt dass Sprites verschwinden.
+- 12 Gegner, 6 Spielerschüsse, 16 Gegnerschüsse (RAM `$C400–$C4FF`, ist der Pool voll, entfällt der Schuss), 64 Hardware-Sprites
+- Wenn mehr als 8 Sprites in einer Bildzeile liegen, rotiert die Reihenfolge jeden Frame, sodass es flackert statt dass Sprites verschwinden. Gegnerschüsse stehen vor den Gegnern in der Sprite-Tabelle und rotieren unter sich.
+- Rechenzeit: 12 Gegner ohne Schüsse passen in ein Bild. Ein aktiver Gegnerschuss kostet rund 1 500 Takte (Bewegung, Kollision, Zeichnen) von 59 736 je Bild; viele Gegner plus viele Schüsse verlangsamen das Spiel.
+- Gegnerschüsse fliegen durch tödliche Pinsel.
 - Scrolltempo < 8 px/Frame (eine neue Tile-Spalte bzw. -Zeile pro Frame)
 - VRAM: BG-Tiles 0–255, Sprite-Tiles 256–447, Name Table `$3800`, SAT `$3F00`
 
 ## Changelog
+- v3 (ohne Versionswechsel, Typ-Byte 8–9 waren reservierte Nullen = schießt nicht): Gegnerschüsse (Schussdefinition je Gegnertyp)
+- v3 (ohne Versionswechsel, ältere Daten nutzen nur Typ 1): Ereignistypen 2–5 (Tempo, Musik, Warten, Checkpoint)
+- v3 (ohne Versionswechsel, vorher reservierte Null-Byte): Startkamera (Level `28`) und Unverwundbar (Global `2E`) für Test-ROMs
 - v3: Hintergrund-Kollision (tödliche Pinsel)
 - v2: Sound – Songs, Effekte, Periodentabelle, Soundtest-Byte, Levelmusik
 - v1: erste Version (Scrolling H/V, Formationen mit Pfaden, Spieler, Schüsse, Kollision, Explosionen, Level-Abfolge)
