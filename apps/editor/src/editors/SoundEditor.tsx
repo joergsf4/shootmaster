@@ -215,10 +215,14 @@ function SfxEditor() {
         <div className="toolbar">
           <button onClick={newFx}>+ Neu</button>
           {fx && <button onClick={() => { const id = uid('sfx'); edit((d) => { d.sfx.push({ ...fx, id, name: fx.name + ' Kopie' }); }); select({ sfx: id }); }}>Duplizieren</button>}
-          {fx && <button onClick={() => edit((d) => {
-            d.sfx.splice(fi, 1);
-            (['shot', 'explosion', 'hit'] as const).forEach((k) => { if (d.sounds[k] === fx.id) d.sounds[k] = ''; });
-          })}>Löschen</button>}
+          {fx && <button onClick={() => {
+            const roles = ([['shot', 'Schuss'], ['explosion', 'Explosion'], ['hit', 'Treffer']] as const).filter(([k]) => p.sounds[k] === fx.id).map(([, l]) => l);
+            if (roles.length && !confirm(`Effekt „${fx.name}“ ist ${roles.join(', ')} zugeordnet. Trotzdem löschen? Dort ist dann kein Sound mehr (Strg+Z macht es rückgängig).`)) return;
+            edit((d) => {
+              d.sfx.splice(fi, 1);
+              (['shot', 'explosion', 'hit'] as const).forEach((k) => { if (d.sounds[k] === fx.id) d.sounds[k] = ''; });
+            });
+          }}>Löschen</button>}
         </div>
         <h3>Im Spiel</h3>
         <div className="form">

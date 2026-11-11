@@ -8,6 +8,7 @@ const KEYS: Record<string, number> = {
   KeyY: BTN.b1, KeyZ: BTN.b1, KeyJ: BTN.b1, Space: BTN.b1,
   KeyX: BTN.b2, KeyK: BTN.b2,
 };
+const SCALE_KEY = 'sms-shmup-play-scale';
 
 /** Eingebetteter Emulator: spielt das erzeugte ROM. */
 export function PlayModal({ rom, title, onClose, onRestart, invincible, onInvincible }: {
@@ -19,7 +20,8 @@ export function PlayModal({ rom, title, onClose, onRestart, invincible, onInvinc
   const ref = useRef<HTMLCanvasElement>(null);
   const act = useRef({ onClose, onRestart });
   act.current = { onClose, onRestart };
-  const [scale, setScale] = useState(3);
+  const [scale, setScaleState] = useState(() => { try { const v = Number(localStorage.getItem(SCALE_KEY)); return [2, 3, 4].includes(v) ? v : 3; } catch { return 3; } });
+  const setScale = (s: number) => { setScaleState(s); try { localStorage.setItem(SCALE_KEY, String(s)); } catch { /* nur Komfort */ } };
   const [fps, setFps] = useState(0);
 
   useEffect(() => {
@@ -49,8 +51,9 @@ export function PlayModal({ rom, title, onClose, onRestart, invincible, onInvinc
     let keyBits = 0;
     const kd = (e: KeyboardEvent) => {
       if (e.code === 'Escape') { act.current.onClose(); return; }
-      if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) { act.current.onRestart(); return; }
-      if (e.code === 'KeyP' || e.code === 'Enter') { sms.pause(); return; }
+      if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) { e.preventDefault(); if (!e.repeat) act.current.onRestart(); return; }
+      // preventDefault: sonst löst Enter den noch fokussierten „▶ Spielen“-Knopf aus und startet neu
+      if (e.code === 'KeyP' || e.code === 'Enter' || e.code === 'NumpadEnter') { e.preventDefault(); if (!e.repeat) sms.pause(); return; }
       const b = KEYS[e.code];
       if (b) { keyBits |= b; sms.buttons |= b; e.preventDefault(); }
     };
@@ -72,7 +75,7 @@ export function PlayModal({ rom, title, onClose, onRestart, invincible, onInvinc
     <div className="modal">
       <div className="modal-body">
         <div className="modal-head">
-          <b>▶ {title}</b>
+          <b>▶ {title}{invincible ? ' · unverwundbar' : ''}</b>
           <span className="hint">Pfeile/WASD bewegen · Z/Y/Leertaste feuern · P Pause · R Neustart · Esc schließen · {fps} fps</span>
           {/* blur: sonst löst die Leertaste (= Feuer) den fokussierten Schalter aus */}
           <label className="check" title="Treffer kosten kein Leben (startet neu)"><input type="checkbox" checked={invincible} onChange={(e) => { e.currentTarget.blur(); onInvincible(e.target.checked); }} /> Unverwundbar</label>

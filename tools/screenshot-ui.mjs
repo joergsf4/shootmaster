@@ -38,7 +38,7 @@ await page.screenshot({ path: `${out}/sound-sfx.png` });
 
 // Ereignis im Level-Editor anwählen (Pfad-Overlay)
 await page.locator('nav button', { hasText: 'Level' }).first().click();
-await page.locator('button', { hasText: 'Gegner-Ereignisse' }).click();
+await page.locator('[data-tour="events"]').click();
 await page.waitForTimeout(200);
 const cv = page.locator('.level-scroll canvas');
 const box = await cv.boundingBox();

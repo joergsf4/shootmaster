@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formationMembers, framePositions, sampleSpline, type Formation, type Point } from '@sms/core';
+import { formationMembers, formationUsers, framePositions, sampleSpline, type Formation, type Point } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { spriteCanvases } from '../gfx';
+import { secs, SHOT_LABEL } from './ObjectsEditor';
 
 const MARGIN = 64;
 const Z = 2;
@@ -27,7 +28,7 @@ const maxSpacing = (count: number) => Math.min(60, Math.floor(255 / Math.max(1, 
 
 export function FormationEditor() {
   const p = useProject();
-  const { edit, sel, select } = useStore();
+  const { edit, sel, select, goto } = useStore();
   const f = p.formations.find((x) => x.id === sel.formation) ?? p.formations[0];
   const idx = p.formations.findIndex((x) => x.id === f?.id);
   const up = (fn: (d: Formation) => void, co?: string) => edit((d) => { fn(d.formations[idx]); }, co);
@@ -146,7 +147,9 @@ export function FormationEditor() {
           <button onClick={newFormation}>+ Neu</button>
           <button onClick={() => { const id = uid('f'); edit((d) => { d.formations.push({ ...JSON.parse(JSON.stringify(f)), id, name: f.name + ' Kopie' }); }); select({ formation: id }); }}>Duplizieren</button>
           <button onClick={() => {
-            if (p.levels.some((l) => l.events.some((e) => e.formationId === f.id)) && !confirm('Formation wird in Leveln benutzt. Löschen (inkl. Ereignisse)?')) return;
+            const n = p.levels.reduce((s, l) => s + l.events.filter((e) => e.formationId === f.id).length, 0);
+            const where = formationUsers(p, f.id).map((u) => u.label).join(', ');
+            if (n && !confirm(`Formation „${f.name}“ steht in ${where}. Löschen? ${n === 1 ? 'Das Ereignis wird' : `Die ${n} Ereignisse werden`} mitgelöscht (Strg+Z macht es rückgängig).`)) return;
             edit((d) => { d.formations.splice(idx, 1); d.levels.forEach((l) => { l.events = l.events.filter((e) => e.formationId !== f.id); }); });
           }}>Löschen</button>
         </div>
@@ -154,7 +157,11 @@ export function FormationEditor() {
           <label>Name <input value={f.name} onChange={(e) => up((d) => { d.name = e.target.value; }, 'name')} /></label>
           <label>Gegnertyp <select value={f.enemyTypeId} onChange={(e) => up((d) => { d.enemyTypeId = e.target.value; })}>
             {p.enemyTypes.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></label>
-          <label>Tempo <input type="range" min={0.25} max={4} step={0.25} value={f.speed} onChange={(e) => up((d) => { d.speed = +e.target.value; }, 'speed')} /> {f.speed} px/F</label>
+          {etype && <span className="hint">
+            schießt: {etype.shot.pattern === 'none' ? 'nicht' : `${SHOT_LABEL[etype.shot.pattern]}, alle ${etype.shot.interval} Frames (${secs(etype.shot.interval)})`}{' '}
+            <button onClick={() => goto({ tab: 'objects', id: etype.id })} title="Gegnertyp bearbeiten">→ ändern</button>
+          </span>}
+          <label>Tempo <input type="range" min={0.25} max={4} step={0.25} value={f.speed} onChange={(e) => up((d) => { d.speed = +e.target.value; }, 'speed')} /> {f.speed} px/Frame</label>
           <label>Verband
             <select value={f.mode} onChange={(e) => up((d) => { d.mode = e.target.value as Formation['mode']; if (d.mode === 'block' && !d.offsets.length) d.offsets = BLOCKS['V-Form']; })}>
               <option value="chain">Kette (folgen einander)</option>

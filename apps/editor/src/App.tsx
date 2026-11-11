@@ -12,6 +12,7 @@ import { PlayModal } from './components/PlayModal';
 import { Tour } from './components/Tour';
 import { Problems, type Problem } from './components/Problems';
 import { downloadBlob } from './gfx';
+import { isTextEntry } from './keys';
 
 const TABS: [Tab, string][] = [
   ['levels', '🗺 Level'],
@@ -25,6 +26,8 @@ const TABS: [Tab, string][] = [
 
 const engine = engineBinary();
 const TOUR_KEY = 'sms-shmup-tour-done';
+/** „einmal gespielt“ (Checkliste) gilt projektunabhängig für diesen Browser */
+const PLAYED_KEY = 'sms-shmup-played';
 /** Platzhalter-Schiffe der Vorlagen: gilt nicht als „gemalt“ */
 const PLACEHOLDER_SHIPS = (['h', 'v'] as const).map((o) => JSON.stringify(createTemplateProject(o).sprites[0].frames[0]));
 
@@ -33,7 +36,9 @@ type PlayOpts = { levelId?: string; startCam?: number };
 
 function tryBuild(p: Project, firstLevel?: string, opts?: CompileOptions) {
   try {
-    const proj = firstLevel ? { ...p, levels: [...p.levels.filter((l) => l.id === firstLevel), ...p.levels.filter((l) => l.id !== firstLevel)] } : p;
+    // Gewähltes Level zuerst, danach die folgenden, dann die davor – wie im Spiel weiter
+    const i = firstLevel ? p.levels.findIndex((l) => l.id === firstLevel) : -1;
+    const proj = i > 0 ? { ...p, levels: [...p.levels.slice(i), ...p.levels.slice(0, i)] } : p;
     return { ...buildRom(engine, proj, opts), error: undefined };
   } catch (e) {
     return { rom: undefined, data: undefined, error: (e as Error).message };
@@ -44,8 +49,9 @@ export function App() {
   const { project, tab, setTab, select, undo, redo, past, future, load, edit, saveError, recovered, dismissRecovered } = useStore();
   const [play, setPlay] = useState<{ rom: Uint8Array; title: string; opts: PlayOpts } | null>(null);
   const [invincible, setInvincible] = useState(false);
-  // shortcut: „gespielt“ gilt nur für diese Sitzung, bei Bedarf wie TOUR_KEY merken
-  const [played, setPlayed] = useState(false);
+  const [played, setPlayed] = useState(() => { try { return !!localStorage.getItem(PLAYED_KEY); } catch { return false; } });
+  const [problemsOpen, setProblemsOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
   const [tour, setTour] = useState(() => { try { return !localStorage.getItem(TOUR_KEY); } catch { return false; } });
   const endTour = () => { setTour(false); try { localStorage.setItem(TOUR_KEY, '1'); } catch { /* nur Komfort */ } };
   const build = useMemo(() => tryBuild(project), [project]);
@@ -59,7 +65,7 @@ export function App() {
 
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
-      if (play || (e.target as HTMLElement).tagName === 'INPUT') return;
+      if (play || isTextEntry(e.target)) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
     };
@@ -68,16 +74,16 @@ export function App() {
   }, [play, undo, redo]);
 
   const startPlay = (opts: PlayOpts = {}, inv = invincible) => {
-    if (blocker) { alert('Erst diesen Fehler beheben:\n' + blocker); return; }
+    if (blocker) { setProblemsOpen(true); return; }
     const b = tryBuild(project, opts.levelId, { startCam: opts.startCam, invincible: inv });
     if (b.error || !b.rom) { alert('ROM kann nicht gebaut werden:\n' + b.error); return; }
     const name = opts.levelId ? project.levels.find((l) => l.id === opts.levelId)?.name : project.name;
     setPlay({ rom: b.rom, title: (name ?? '') + (opts.startCam ? ` · ab ${opts.startCam} px` : ''), opts });
-    setPlayed(true);
+    if (!played) { setPlayed(true); try { localStorage.setItem(PLAYED_KEY, '1'); } catch { /* nur Komfort */ } }
   };
 
   const replace = (p: Project, what: string) => {
-    if (confirm(`Aktuelles Projekt durch ${what} ersetzen? (Rückgängig mit Strg+Z)`)) load(p);
+    if (confirm(`Aktuelles Projekt durch ${what} ersetzen? Strg+Z macht es rückgängig; zur Sicherheit vorher mit „💾 Projekt“ als Datei sichern.`)) load(p);
   };
 
   const ship = project.sprites.find((s) => s.id === project.player.spriteId)?.frames[0];
@@ -85,9 +91,10 @@ export function App() {
   const emptyLevel = project.levels.find((l) => !hasSpawn(l)) ?? project.levels[0];
   const checklist: [boolean, string, () => void][] = [
     [!!ship?.some((v) => v) && !PLACEHOLDER_SHIPS.includes(JSON.stringify(ship)), 'Schiff gemalt', () => { setTab('sprites'); select({ sprite: project.player.spriteId, frame: 0 }); }],
-    [project.levels.some(hasSpawn), 'Formation platziert', () => { setTab('levels'); if (emptyLevel) select({ level: emptyLevel.id }); }],
-    [played, 'einmal gespielt', () => startPlay()],
+    [project.levels.some(hasSpawn), 'Formation platziert', () => { setTab('levels'); select(emptyLevel ? { level: emptyLevel.id, levelTool: 'events' } : { levelTool: 'events' }); }],
+    [played, 'einmal gespielt', () => { if (!play) startPlay(); }],
   ];
+  const allDone = checklist.every(([done]) => done);
 
   const fileName = project.name.replace(/[^\w\-äöüÄÖÜß ]+/g, '').trim().replace(/\s+/g, '_') || 'shmup';
   const st = build.data?.stats;
@@ -101,10 +108,14 @@ export function App() {
         <button disabled={!future.length} onClick={redo} title="Wiederholen (Strg+Y)">↷</button>
         <span className="grow" />
         {saveError && <span className="budget bad" title="Der Browser lässt kein Speichern zu (blockiert oder voll).">⚠ Nicht gespeichert – bitte Projekt exportieren</span>}
-        <span title={blocker && `Erst beheben: ${blocker}`}><button className="primary" disabled={!!blocker} onClick={() => startPlay()}>▶ Spielen</button></span>
-        <span title={blocker && `Erst beheben: ${blocker}`}><button data-tour="export" disabled={!build.rom || !!blocker} onClick={() => build.rom && downloadBlob(build.rom as Uint8Array<ArrayBuffer>, `${fileName}.sms`)}>⬇ ROM (.sms)</button></span>
-        <button onClick={() => downloadBlob(JSON.stringify(project), `${fileName}.shmup.json`, 'application/json')}>💾 Projekt</button>
-        <label className="button">📂 Laden<input type="file" accept=".json" hidden onChange={async (e) => {
+        {/* bei Fehlern klickbar: Klick klappt die Problem-Liste auf */}
+        <button className="primary" title={blocker && `Erst beheben: ${blocker}`} onClick={() => { if (!play) startPlay(); }}>▶ Spielen</button>
+        <button data-tour="export" title={blocker && `Erst beheben: ${blocker}`} onClick={() => {
+          if (blocker || !build.rom) setProblemsOpen(true);
+          else downloadBlob(build.rom as Uint8Array<ArrayBuffer>, `${fileName}.sms`);
+        }}>⬇ ROM (.sms)</button>
+        <button title="Projekt als Datei sichern, zusätzlich zum automatischen Speichern" onClick={() => downloadBlob(JSON.stringify(project), `${fileName}.shmup.json`, 'application/json')}>💾 Projekt</button>
+        <label className="button" title="Projektdatei (.json) laden; ersetzt das aktuelle Projekt">📂 Laden<input type="file" accept=".json" hidden onChange={async (e) => {
           const f = e.target.files?.[0];
           e.target.value = '';
           if (!f) return;
@@ -115,40 +126,43 @@ export function App() {
             replace(p as Project, `„${f.name}“`);
           } catch (err) { alert('Datei konnte nicht geladen werden: ' + (err as Error).message); }
         }} /></label>
-        <select value="" onChange={(e) => {
+        <select className="new-project" value="" title="Neues Projekt anlegen; ersetzt das aktuelle" onChange={(e) => {
           const v = e.target.value;
           if (v === 'demo') replace(createDemoProject(), 'das Demo-Projekt');
           else replace(createTemplateProject(v as Orientation), `ein leeres Spiel (${v === 'h' ? 'horizontal' : 'vertikal'})`);
         }}>
-          <option value="" disabled hidden>Neu ▾</option>
-          <option value="h">Leer horizontal</option>
-          <option value="v">Leer vertikal</option>
-          <option value="demo">Demo</option>
+          <option value="" disabled hidden>Neu</option>
+          <option value="h">Neues Spiel – horizontal</option>
+          <option value="v">Neues Spiel – vertikal</option>
+          <option value="demo">Demo-Projekt</option>
         </select>
-        <button onClick={() => setTour(true)}>? Tutorial</button>
+        <button onClick={() => setTour(true)} title="Geführte Tour durch alle Werkzeuge">? Tutorial</button>
       </header>
       {recovered && (
         <div className="banner">
           ⚠ Der gespeicherte Stand war ungültig ({recovered.error}) und wurde durch das Demo ersetzt.{' '}
-          {recovered.key ? `Er ist im Browser gesichert unter „${recovered.key}“.` : 'Sichern im Browser ging nicht – automatisches Speichern ist aus, bis du diesen Hinweis schließt.'}
+          {recovered.key ? 'Er ist im Browser gesichert – lade ihn herunter, wenn du ihn prüfen oder reparieren willst, und schließe dann diesen Hinweis.' : 'Sichern im Browser ging nicht – automatisches Speichern ist aus, bis du diesen Hinweis schließt.'}
           <span className="grow" />
-          <button onClick={() => downloadBlob(recovered.raw, 'alter-stand.shmup.json', 'application/json')}>⬇ Alten Stand herunterladen</button>
+          <button title={recovered.key ? `Im Browser gesichert unter „${recovered.key}“` : undefined} onClick={() => downloadBlob(recovered.raw, 'defekter-stand.json', 'application/json')}>⬇ Alten Stand herunterladen</button>
           <button onClick={dismissRecovered} title="Hinweis schließen">✕</button>
         </div>
       )}
       <nav>
         {TABS.map(([t, label]) => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{label}</button>)}
         <span className="sep" />
-        {checklist.map(([done, label, go]) => <button key={label} className={`todo ${done ? 'done' : ''}`} onClick={go}>{done ? '☑' : '☐'} {label}</button>)}
-        <span className="grow" />
-        {st && (
-          <span className="stats">
-            <Budget label="Kacheln" used={st.bgTiles} max={MAX_BG_TILES} />
-            <Budget label="Sprite-Tiles" used={st.spriteTiles} max={MAX_SPRITE_TILES} />
-            <span className="budget">ROM {st.romSize / 1024} KB</span>
-          </span>
-        )}
-        <Problems items={problems} />
+        {allDone && <button className="todo done" onClick={() => setStepsOpen(!stepsOpen)} title="Checkliste für den Einstieg ein-/ausklappen">✓ Erste Schritte</button>}
+        {(!allDone || stepsOpen) && checklist.map(([done, label, go]) => <button key={label} className={`todo ${done ? 'done' : ''}`} onClick={go}>{done ? '☑' : '☐'} {label}</button>)}
+        {/* rechts bündig, auch nach einem Zeilenumbruch */}
+        <span className="nav-right">
+          {st && (
+            <span className="stats">
+              <Budget label="Kacheln" used={st.bgTiles} max={MAX_BG_TILES} />
+              <Budget label="Sprite-Tiles" used={st.spriteTiles} max={MAX_SPRITE_TILES} />
+              <span className="budget">ROM {st.romSize / 1024} KB</span>
+            </span>
+          )}
+          <Problems items={problems} open={problemsOpen} setOpen={setProblemsOpen} />
+        </span>
       </nav>
       <main>
         {tab === 'palette' && <PaletteEditor />}
@@ -156,7 +170,7 @@ export function App() {
         {tab === 'sprites' && <SpriteEditor />}
         {tab === 'objects' && <ObjectsEditor />}
         {tab === 'formations' && <FormationEditor />}
-        {tab === 'levels' && <LevelEditor onPlay={(levelId, startCam) => { if (!play) startPlay({ levelId, startCam }); }} />}
+        {tab === 'levels' && <LevelEditor keysOff={!!play || tour} onPlay={(levelId, startCam) => { if (!play) startPlay({ levelId, startCam }); }} />}
         {tab === 'sound' && <SoundEditor />}
       </main>
       {tour && !play && <Tour onClose={endTour} />}

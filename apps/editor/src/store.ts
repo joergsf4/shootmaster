@@ -6,14 +6,15 @@ const KEY = 'sms-shmup-project-v1';
 const MAX_HISTORY = 200;
 
 export type Tab = EditorTab;
+export type LevelTool = 'brush' | 'rect' | 'fill' | 'pick' | 'erase' | 'events';
 
 interface State {
   project: Project;
   past: Project[];
   future: Project[];
   tab: Tab;
-  /** Auswahl je Editor */
-  sel: { metatile: number; sprite: string; frame: number; formation: string; level: string; enemy: string; song: string; sfx: string };
+  /** Auswahl je Editor; levelTool liegt hier, damit Sprünge (Checkliste, Problem-Panel) das Werkzeug mit umschalten können */
+  sel: { metatile: number; sprite: string; frame: number; formation: string; level: string; enemy: string; song: string; sfx: string; levelTool: LevelTool };
   /** Änderung mit Undo-Schritt */
   edit: (fn: (d: Draft<Project>) => void, coalesce?: string) => void;
   undo: () => void;
@@ -22,6 +23,8 @@ interface State {
   select: (s: Partial<State['sel']>) => void;
   /** Sprung zu einem Element (Problem-Panel, Verwender-Links) */
   goto: (r: DiagRef) => void;
+  /** Sprungziel im Level (Kamera-Pixel): der Level-Editor scrollt hin, wählt das Ereignis dort und löscht es dann; neues Objekt je Sprung */
+  focus: { pos: number } | null;
   load: (p: Project) => void;
   /** Autosave fehlgeschlagen → Nutzer muss exportieren */
   saveError: boolean;
@@ -70,7 +73,7 @@ export const useStore = create<State>((set, get) => ({
   dismissRecovered: () => set({ recovered: null }),
   sel: {
     metatile: 1, sprite: p0.sprites[0]?.id ?? '', frame: 0,
-    formation: p0.formations[0]?.id ?? '', level: p0.levels[0]?.id ?? '', enemy: p0.enemyTypes[0]?.id ?? '', song: '', sfx: '',
+    formation: p0.formations[0]?.id ?? '', level: p0.levels[0]?.id ?? '', enemy: p0.enemyTypes[0]?.id ?? '', song: '', sfx: '', levelTool: 'brush',
   },
   edit: (fn, coalesce) => {
     const { project, past } = get();
@@ -96,10 +99,12 @@ export const useStore = create<State>((set, get) => ({
   },
   setTab: (tab) => set({ tab }),
   select: (s) => set({ sel: { ...get().sel, ...s } }),
-  goto: ({ tab, id }) => {
+  focus: null,
+  goto: ({ tab, id, events, pos }) => {
     const s: Partial<State['sel']> = id === undefined ? {} : tab === 'sprites' ? { sprite: id, frame: 0 }
       : tab === 'levels' ? { level: id } : tab === 'formations' ? { formation: id } : tab === 'objects' ? { enemy: id } : {};
-    set({ tab, sel: { ...get().sel, ...s } });
+    if (tab === 'levels' && (events || pos !== undefined)) s.levelTool = 'events';
+    set({ tab, sel: { ...get().sel, ...s }, focus: tab === 'levels' && pos !== undefined ? { pos } : null });
   },
   /** Ersetzt das Projekt als normaler Undo-Schritt */
   load: (p) => {
@@ -107,7 +112,11 @@ export const useStore = create<State>((set, get) => ({
     lastCoalesce = undefined;
     set({
       project: p, past: [...past.slice(-MAX_HISTORY), project], future: [],
-      sel: { metatile: 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '', level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '' },
+      // Pinsel 1 statt 0: Pinsel 0 ist in den Vorlagen leer, der erste Strich bliebe unsichtbar
+      sel: {
+        metatile: p.metatiles.length > 1 ? 1 : 0, sprite: p.sprites[0]?.id ?? '', frame: 0, formation: p.formations[0]?.id ?? '',
+        level: p.levels[0]?.id ?? '', enemy: p.enemyTypes[0]?.id ?? '', song: '', sfx: '', levelTool: 'brush',
+      },
     });
   },
 }));

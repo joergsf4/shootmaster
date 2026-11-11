@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bakePath, buildRom, compileProject, createDemoProject, validateProject, decodeTile, encodeNameEntry, encodeTile, engineBinary, framePositions, rgbToSms, smsToRgb } from '../src/index';
 import { SMS, BTN, PSG } from '../../sms-emu/src/index';
-import { createTemplateProject, layoutBgTiles, levelCamMax, lintProject, peakEnemies, periodTable, shotVelocity, spriteUsers, upgradeProject, type EnemyShot, type Level, type LevelEvent, type Metatile } from '../src/index';
+import { createTemplateProject, layoutBgTiles, levelCamMax, levelDuration, lintProject, peakEnemies, shrinkLoss, stackNeighbor, periodTable, shotVelocity, spriteUsers, upgradeProject, type EnemyShot, type Level, type LevelEvent, type Metatile } from '../src/index';
 
 describe('Hardware-Primitive', () => {
   it('kodiert Tiles planar 4bpp und zurück', () => {
@@ -254,9 +254,9 @@ describe('Problem-Panel (lintProject)', () => {
     lv.map[1] = -1;
     p.formations[0].count = 14;
     const d = lintProject(p);
-    expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: Ereignis bei 100 verweist auf gelöschte Formation`, ref: { tab: 'levels', id: lv.id } });
-    expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: 2 Felder mit fehlendem Pinsel`, ref: { tab: 'levels', id: lv.id } });
-    expect(d).toContainEqual({ severity: 'warn', msg: `Formation „${p.formations[0].name}“: 14 Gegner, höchstens 12 erscheinen`, ref: { tab: 'formations', id: p.formations[0].id } });
+    expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: Ereignis bei 100 px verweist auf gelöschte Formation – neu wählen oder löschen`, ref: { tab: 'levels', id: lv.id, events: true, pos: 100 } });
+    expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: 2 Felder mit fehlendem Pinsel – neu malen`, ref: { tab: 'levels', id: lv.id } });
+    expect(d).toContainEqual({ severity: 'warn', msg: `Formation „${p.formations[0].name}“: 14 Gegner, höchstens 12 erscheinen – Anzahl senken`, ref: { tab: 'formations', id: p.formations[0].id } });
   });
   it('meldet tote Sprites/Gegnertypen, kurze Pfade, Ereignisse hinter dem Ende, leere Level und Unbenutztes', () => {
     const p = createDemoProject();
@@ -268,15 +268,24 @@ describe('Problem-Panel (lintProject)', () => {
     p.levels[1].events = [];
     p.sprites.push({ ...p.sprites[0], id: 'neu', name: 'Neu' });
     expect(msgs(p, 'error')).toEqual(expect.arrayContaining([
-      `Gegnertyp „${p.enemyTypes[0].name}“: Sprite fehlt`,
-      `Formation „${f0.name}“: Gegnertyp fehlt`,
-      `Formation „${f0.name}“: Pfad braucht mind. 2 Punkte`,
+      `Gegnertyp „${p.enemyTypes[0].name}“: Sprite fehlt – neu wählen`,
+      `Formation „${f0.name}“: Gegnertyp fehlt – neu wählen`,
+      `Formation „${f0.name}“: Pfad braucht mind. 2 Punkte – in die Fläche klicken`,
     ]));
     expect(msgs(p, 'warn')).toEqual(expect.arrayContaining([
-      `Level „${p.levels[0].name}“: Ereignis bei 99999 liegt hinter dem Levelende und kommt schon bei ${levelCamMax(p.levels[0])}`,
-      `Level „${p.levels[1].name}“: keine Gegner-Ereignisse`,
-      'Sprite „Neu“ wird nicht verwendet',
+      `Level „${p.levels[0].name}“: Ereignis bei 99999 px liegt hinter dem Levelende und kommt schon bei ${levelCamMax(p.levels[0])} px – verschieben`,
+      `Level „${p.levels[1].name}“: keine Gegner-Ereignisse – mit „◆ Ereignisse“ Formationen setzen`,
+      'Sprite „Neu“ wird nicht verwendet – zuordnen oder löschen',
     ]));
+    // Sprungziele: Ereignis-Werkzeug, bei Ereignissen mit Position
+    const ref = (start: string) => lintProject(p).find((d) => d.msg.startsWith(start))!.ref;
+    expect(ref(`Level „${p.levels[1].name}“: keine Gegner`)).toEqual({ tab: 'levels', id: p.levels[1].id, events: true });
+    expect(ref(`Level „${p.levels[0].name}“: Ereignis bei 99999`)).toEqual({ tab: 'levels', id: p.levels[0].id, events: true, pos: 99999 });
+  });
+  it('zählt Felder mit fehlendem Pinsel in der Einzahl richtig', () => {
+    const p = createDemoProject();
+    p.levels[0].map[0] = -1;
+    expect(msgs(p, 'error')).toContain(`Level „${p.levels[0].name}“: 1 Feld mit fehlendem Pinsel – neu malen`);
   });
   it('kaputte Formation ohne Verwendung ist nur eine Warnung (der Compiler baut sie nicht ein)', () => {
     const p = createTemplateProject('h');
@@ -416,7 +425,7 @@ describe('Level-Ereignisse: Tempo, Musik, Warten, Checkpoint', () => {
 
   it('Tempo: schneller ab 40, Stopp bei 200 – die Kamera bleibt dort stehen (und Lint warnt)', () => {
     const p = withEvents([{ pos: 0, type: 'spawn', formationId: 'f-1' }, { pos: 40, type: 'speed', speed: 2 }, { pos: 200, type: 'speed', speed: 0 }]);
-    expect(lintProject(p).map((d) => d.msg)).toContain(`Level „${p.levels[0].name}“: Kamera bleibt bei 200 stehen (Tempo 0), das Level endet nie`);
+    expect(lintProject(p)).toContainEqual({ severity: 'warn', msg: `Level „${p.levels[0].name}“: Kamera bleibt bei 200 px stehen (Tempo 0), das Level endet nie – an derselben Stelle ein Tempo-Ereignis anhängen`, ref: { tab: 'levels', id: p.levels[0].id, events: true, pos: 200 } });
     const sms = new SMS(buildRom(engineBinary(), p).rom);
     for (let f = 0; f < 200; f++) sms.runFrame();
     expect(cam(sms)).toBe(200); // mit 0,5 px/F wären es erst ~100
@@ -424,6 +433,40 @@ describe('Level-Ereignisse: Tempo, Musik, Warten, Checkpoint', () => {
     expect(cam(sms)).toBe(200);
     p.levels[0].events.push({ pos: 200, type: 'speed', speed: 1 }); // gleiche Stelle, danach: geht weiter
     expect(lintProject(p).some((d) => d.msg.includes('Kamera bleibt'))).toBe(false);
+  });
+
+  it('Dauer: rechnet Tempo-Ereignisse und die Reststrecke bis zum Levelende ein; Stopp ohne Freigabe endet nie', () => {
+    const p = withEvents([]);
+    const lv = p.levels[0];
+    lv.speed = 0.5;
+    const end = levelCamMax(lv);
+    expect(levelDuration(lv)).toEqual({ frames: end * 2, stopAt: null });
+    lv.events = [{ pos: 100, type: 'speed', speed: 1 }];
+    expect(levelDuration(lv)).toEqual({ frames: 200 + (end - 100), stopAt: null });
+    lv.events.push({ pos: 300, type: 'speed', speed: 0 });
+    expect(levelDuration(lv).stopAt).toBe(300);
+    lv.events.push({ pos: 300, type: 'speed', speed: 2 });
+    expect(levelDuration(lv)).toEqual({ frames: 200 + 200 + Math.ceil((end - 300) / 2), stopAt: null });
+    // Engine: Tempo-Ereignisse verkürzen die Zeit bis zum Ende so wie vorhergesagt (±1 Frame je Tempowechsel; Startvorlauf fällt heraus)
+    const run = () => { const sms = new SMS(buildRom(engineBinary(), p).rom); let f = 0; while (cam(sms) < end && f < 5000) { sms.runFrame(); f++; } return f; };
+    const withSpeed = run(), events = lv.events;
+    lv.events = [];
+    expect(Math.abs((run() - withSpeed) - (levelDuration(lv).frames - levelDuration({ ...lv, events }).frames))).toBeLessThanOrEqual(3);
+  });
+
+  it('Stapel: früher/später findet nur Ereignisse an derselben Position', () => {
+    const lv = withEvents([{ pos: 10, type: 'checkpoint' }, { pos: 20, type: 'waitClear' }, { pos: 10, type: 'speed', speed: 1 }]).levels[0];
+    expect([stackNeighbor(lv, 0, -1), stackNeighbor(lv, 0, 1), stackNeighbor(lv, 2, -1), stackNeighbor(lv, 1, 1)]).toEqual([-1, 2, 0, -1]);
+  });
+
+  it('Kürzen: meldet abgeschnittene bemalte Spalten und Ereignisse, die ans Ende rücken', () => {
+    const lv = withEvents([{ pos: 100, type: 'checkpoint' }, { pos: 500, type: 'checkpoint' }]).levels[0];
+    lv.length = 64;
+    lv.map = new Array(64 * 12).fill(0);
+    expect(shrinkLoss(lv, 40)).toEqual({ cut: 0, events: 1 }); // Ende bei 384
+    lv.map[50 * 12 + 3] = 1;
+    expect(shrinkLoss(lv, 40)).toEqual({ cut: 24, events: 1 });
+    expect(shrinkLoss(lv, 51)).toEqual({ cut: 0, events: 0 });
   });
 
   it('Musik: Wechsel auf einen Song und zurück zu Stille', () => {
@@ -520,7 +563,7 @@ describe('Level-Ereignisse: Tempo, Musik, Warten, Checkpoint', () => {
 
   it('Lint: Musik-Ereignis mit gelöschtem Song', () => {
     const p = withEvents([{ pos: 0, type: 'spawn', formationId: 'f-1' }, { pos: 50, type: 'music', musicId: 'weg' }]);
-    expect(lintProject(p)).toContainEqual({ severity: 'warn', msg: `Level „${p.levels[0].name}“: Musik-Ereignis bei 50: Song fehlt`, ref: { tab: 'levels', id: p.levels[0].id } });
+    expect(lintProject(p)).toContainEqual({ severity: 'warn', msg: `Level „${p.levels[0].name}“: Musik-Ereignis bei 50 px: Song wurde gelöscht – neu wählen`, ref: { tab: 'levels', id: p.levels[0].id, events: true, pos: 50 } });
   });
 });
 
@@ -653,8 +696,18 @@ describe('Gegnerschüsse', () => {
     const bug = p.enemyTypes[1];
     expect(spriteUsers(p, 'orb')).toEqual([{ label: `Gegnertyp „${bug.name}“ (Schuss)`, ref: { tab: 'objects', id: bug.id } }]);
     bug.shot.spriteId = 'weg';
-    expect(lintProject(p)).toContainEqual({ severity: 'error', msg: `Gegnertyp „${bug.name}“: Schuss-Sprite fehlt`, ref: { tab: 'objects', id: bug.id } });
+    expect(lintProject(p)).toContainEqual({ severity: 'error', msg: `Gegnertyp „${bug.name}“: Schuss-Sprite fehlt – neu wählen`, ref: { tab: 'objects', id: bug.id } });
     bug.shot.pattern = 'none';
     expect(lintProject(p).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('Lint: Gegnerschuss mit dem Sprite des Spielerschusses ist eine Warnung (nur wenn er schießt)', () => {
+    const p = createDemoProject();
+    const bug = p.enemyTypes[1];
+    const warn = { severity: 'warn', msg: `Gegnertyp „${bug.name}“: Schuss sieht aus wie der Spielerschuss – eigenes Sprite wählen`, ref: { tab: 'objects', id: bug.id } };
+    bug.shot.spriteId = p.player.shotSpriteId;
+    expect(lintProject(p)).toContainEqual(warn);
+    bug.shot.pattern = 'none';
+    expect(lintProject(p)).not.toContainEqual(warn);
   });
 });

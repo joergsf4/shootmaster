@@ -1,8 +1,9 @@
 import { Fragment, useState } from 'react';
-import { enemyTypeUsers, noShot, SHOT_PATTERNS, type EnemyShot, type EnemyType, type Hitbox, type ShotPattern, type Use } from '@sms/core';
+import { enemyTypeUsers, noShot, SHOT_PATTERNS, type EnemyShot, type EnemyType, type Hitbox, type ShotPattern } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { SpriteThumb } from './SpriteEditor';
 import { UsedBy } from '../components/Problems';
+import { NumberInput } from '../components/NumberInput';
 
 function SpriteSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const p = useProject();
@@ -16,17 +17,22 @@ function SpriteSelect({ value, onChange }: { value: string; onChange: (v: string
   );
 }
 
-function HitboxInput({ value, onChange }: { value: Hitbox; onChange: (h: Hitbox) => void }) {
+const HITBOX: [keyof Hitbox, string, string][] = [['x', 'x', 'Abstand vom linken Sprite-Rand (px)'], ['y', 'y', 'Abstand vom oberen Sprite-Rand (px)'], ['w', 'b', 'Breite (px)'], ['h', 'h', 'Höhe (px)']];
+export const HITBOX_TITLE = 'Trefferzone im Sprite: x y = Abstand von links/oben, b h = Breite/Höhe (px)';
+
+function HitboxInput({ value, onChange }: { value: Hitbox; onChange: (h: Hitbox, coalesce?: string) => void }) {
   return (
     <span className="hitbox">
-      {(['x', 'y', 'w', 'h'] as const).map((k) => (
-        <label key={k}>{k}<input type="number" min={0} max={64} value={value[k]} onChange={(e) => onChange({ ...value, [k]: +e.target.value })} /></label>
+      {HITBOX.map(([k, label, title]) => (
+        <label key={k} title={title}>{label}<NumberInput min={0} max={64} value={value[k]} title={title} onCommit={(n, c) => onChange({ ...value, [k]: n }, c)} /></label>
       ))}
     </span>
   );
 }
 
-const SHOT_LABEL: Record<ShotPattern, string> = { none: 'schießt nicht', straight: 'gerade', aimed: 'gezielt', fan3: 'Fächer (3, gezielt)' };
+export const SHOT_LABEL: Record<ShotPattern, string> = { none: 'schießt nicht', straight: 'gerade (nach links, im Hochkant-Level nach unten)', aimed: 'gezielt (auf den Spieler)', fan3: 'Fächer (3, gezielt)' };
+/** Frames als Sekunden bei 60 Hz, z. B. „≈ 1,5 s“ */
+export const secs = (frames: number) => `≈ ${(frames / 60).toFixed(1).replace('.', ',')} s`;
 
 function ShotInput({ t, i }: { t: EnemyType; i: number }) {
   const { edit } = useStore();
@@ -39,43 +45,43 @@ function ShotInput({ t, i }: { t: EnemyType; i: number }) {
       </select></label>
       {s.pattern !== 'none' && <>
         <label>Sprite <SpriteSelect value={s.spriteId} onChange={(v) => up((d) => { d.spriteId = v; })} /></label>
-        <label>Feuerpause <input type="range" min={8} max={240} value={s.interval} onChange={(e) => up((d) => { d.interval = +e.target.value; }, `enshotrate-${t.id}`)} /> {s.interval} Frames</label>
-        <label>Tempo <input type="range" min={0.5} max={4} step={0.25} value={s.speed} onChange={(e) => up((d) => { d.speed = +e.target.value; }, `enshotspeed-${t.id}`)} /> {s.speed} px/F</label>
+        <label>Feuerpause <NumberInput min={8} max={240} value={s.interval} onCommit={(n, c) => up((d) => { d.interval = n; }, c)} /> Frames ({secs(s.interval)})</label>
+        <label>Tempo <NumberInput min={0.5} max={4} step={0.25} value={s.speed} onCommit={(n, c) => up((d) => { d.speed = n; }, c)} /> px/Frame</label>
       </>}
     </span>
   );
 }
 
-const num = (v: string, min: number, max: number) => Math.max(min, Math.min(max, Number(v) || 0));
-
 export function ObjectsEditor() {
   const p = useProject();
-  const { edit, sel } = useStore();
+  const { edit, sel, select } = useStore();
   const pl = p.player;
-  const [blocked, setBlocked] = useState<{ name: string; users: Use[] } | null>(null);
+  /** Gegnertyp, dessen Löschen gesperrt ist; die Verwender werden bei jedem Rendern neu ermittelt */
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const blockedType = p.enemyTypes.find((x) => x.id === blocked);
 
   return (
     <div className="split">
-      <div className="panel">
+      <div className="panel fit">
         <h2>Spieler</h2>
         <div className="form">
           <label>Sprite <SpriteSelect value={pl.spriteId} onChange={(v) => edit((d) => { d.player.spriteId = v; })} /></label>
-          <label>Tempo (px/Frame) <input type="number" min={1} max={4} value={pl.speed} onChange={(e) => edit((d) => { d.player.speed = num(e.target.value, 1, 4); })} /></label>
-          <label>Leben <input type="number" min={1} max={9} value={pl.lives} onChange={(e) => edit((d) => { d.player.lives = num(e.target.value, 1, 9); })} /></label>
-          <label>Hitbox <HitboxInput value={pl.hitbox} onChange={(h) => edit((d) => { d.player.hitbox = h; }, 'plhitbox')} /></label>
+          <label>Tempo (px/Frame) <NumberInput min={1} max={4} value={pl.speed} onCommit={(n, c) => edit((d) => { d.player.speed = n; }, c)} /></label>
+          <label>Leben <NumberInput min={1} max={9} value={pl.lives} onCommit={(n, c) => edit((d) => { d.player.lives = n; }, c)} /></label>
+          <label title={HITBOX_TITLE}>Hitbox <HitboxInput value={pl.hitbox} onChange={(h, c) => edit((d) => { d.player.hitbox = h; }, c)} /></label>
         </div>
         <h3>Schuss</h3>
         <div className="form">
           <label>Sprite <SpriteSelect value={pl.shotSpriteId} onChange={(v) => edit((d) => { d.player.shotSpriteId = v; })} /></label>
-          <label>Tempo (px/Frame) <input type="number" min={1} max={12} value={pl.shotSpeed} onChange={(e) => edit((d) => { d.player.shotSpeed = num(e.target.value, 1, 12); })} /></label>
-          <label>Feuerpause (Frames) <input type="number" min={1} max={60} value={pl.fireRate} onChange={(e) => edit((d) => { d.player.fireRate = num(e.target.value, 1, 60); })} /></label>
+          <label>Tempo (px/Frame) <NumberInput min={1} max={12} value={pl.shotSpeed} onCommit={(n, c) => edit((d) => { d.player.shotSpeed = n; }, c)} /></label>
+          <label>Feuerpause (Frames) <NumberInput min={1} max={60} value={pl.fireRate} onCommit={(n, c) => edit((d) => { d.player.fireRate = n; }, c)} /> {secs(pl.fireRate)}</label>
           <label>Versatz x/y
             <span className="hitbox">
-              <input type="number" value={pl.shotOffset.x} onChange={(e) => edit((d) => { d.player.shotOffset.x = num(e.target.value, -64, 64); })} />
-              <input type="number" value={pl.shotOffset.y} onChange={(e) => edit((d) => { d.player.shotOffset.y = num(e.target.value, -64, 64); })} />
+              <NumberInput min={-64} max={64} value={pl.shotOffset.x} onCommit={(n, c) => edit((d) => { d.player.shotOffset.x = n; }, c)} />
+              <NumberInput min={-64} max={64} value={pl.shotOffset.y} onCommit={(n, c) => edit((d) => { d.player.shotOffset.y = n; }, c)} />
             </span>
           </label>
-          <label>Hitbox <HitboxInput value={pl.shotHitbox} onChange={(h) => edit((d) => { d.player.shotHitbox = h; }, 'shothitbox')} /></label>
+          <label title={HITBOX_TITLE}>Hitbox <HitboxInput value={pl.shotHitbox} onChange={(h, c) => edit((d) => { d.player.shotHitbox = h; }, c)} /></label>
         </div>
         <h3>Explosion</h3>
         <div className="form">
@@ -85,30 +91,41 @@ export function ObjectsEditor() {
       <div className="panel scroll-x">
         <h2>Gegnertypen</h2>
         <table className="table">
-          <thead><tr><th>Name</th><th>Sprite</th><th>HP</th><th>Punkte</th><th>Hitbox (x y b h)</th><th /></tr></thead>
+          <thead><tr><th>Name</th><th>Sprite</th><th>HP</th><th>Punkte</th><th title={HITBOX_TITLE}>Hitbox (x y b h)</th></tr></thead>
           <tbody>
             {p.enemyTypes.map((t, i) => (
               <Fragment key={t.id}>
               <tr className={t.id === sel.enemy ? 'sel' : ''}>
-                <td><input value={t.name} onChange={(e) => edit((d) => { d.enemyTypes[i].name = e.target.value; }, `enname-${t.id}`)} /></td>
+                <td><span className="name-cell">
+                  <input value={t.name} onChange={(e) => edit((d) => { d.enemyTypes[i].name = e.target.value; }, `enname-${t.id}`)} />
+                  <button title="Gegnertyp löschen" onClick={() => {
+                    const users = enemyTypeUsers(p, t.id);
+                    if (users.length) { setBlocked(t.id); return; }
+                    setBlocked(null);
+                    edit((d) => { d.enemyTypes.splice(i, 1); });
+                  }}>✕</button>
+                </span></td>
                 <td><SpriteSelect value={t.spriteId} onChange={(v) => edit((d) => { d.enemyTypes[i].spriteId = v; })} /></td>
-                <td><input type="number" min={1} max={255} value={t.hp} onChange={(e) => edit((d) => { d.enemyTypes[i].hp = num(e.target.value, 1, 255); })} /></td>
-                <td><input type="number" min={0} max={255} value={t.score} onChange={(e) => edit((d) => { d.enemyTypes[i].score = num(e.target.value, 0, 255); })} /></td>
-                <td><HitboxInput value={t.hitbox} onChange={(h) => edit((d) => { d.enemyTypes[i].hitbox = h; }, `enhitbox-${t.id}`)} /></td>
-                <td><button onClick={() => {
-                  const users = enemyTypeUsers(p, t.id);
-                  if (users.length) { setBlocked({ name: `Gegnertyp „${t.name}“`, users }); return; }
-                  setBlocked(null);
-                  edit((d) => { d.enemyTypes.splice(i, 1); });
-                }}>✕</button></td>
+                <td><NumberInput min={1} max={255} value={t.hp} onCommit={(n, c) => edit((d) => { d.enemyTypes[i].hp = n; }, c)} /></td>
+                <td><NumberInput min={0} max={255} value={t.score} onCommit={(n, c) => edit((d) => { d.enemyTypes[i].score = n; }, c)} /></td>
+                <td><HitboxInput value={t.hitbox} onChange={(h, c) => edit((d) => { d.enemyTypes[i].hitbox = h; }, c)} /></td>
               </tr>
-              <tr className={`sub ${t.id === sel.enemy ? 'sel' : ''}`}><td /><td colSpan={5}><ShotInput t={t} i={i} /></td></tr>
+              <tr className={`sub ${t.id === sel.enemy ? 'sel' : ''}`}><td /><td colSpan={4}><ShotInput t={t} i={i} /></td></tr>
               </Fragment>
             ))}
           </tbody>
         </table>
-        {blocked && <UsedBy what={blocked.name} users={blocked.users} onClose={() => setBlocked(null)} />}
-        <button onClick={() => edit((d) => { d.enemyTypes.push({ id: uid('e'), name: 'Neuer Gegner', spriteId: d.sprites[0].id, hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot(d.player.shotSpriteId) }); })}>+ Gegnertyp</button>
+        <p className="hint">Gegner schießen nur im Bild, der erste Schuss fällt nach einer vollen Feuerpause. Höchstens 16 Gegnerschüsse gleichzeitig, weitere entfallen.</p>
+        {blockedType && <UsedBy what={`Gegnertyp „${blockedType.name}“`} users={enemyTypeUsers(p, blockedType.id)} onClose={() => setBlocked(null)} />}
+        <button onClick={() => {
+          const id = uid('e');
+          // Sprite und Schuss-Sprite vom letzten Gegnertyp: Spielerschiff/-schuss passen fast nie
+          edit((d) => {
+            const last = d.enemyTypes[d.enemyTypes.length - 1];
+            d.enemyTypes.push({ id, name: 'Neuer Gegner', spriteId: last?.spriteId ?? d.sprites[0].id, hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot(last?.shot.spriteId ?? d.player.shotSpriteId) });
+          });
+          select({ enemy: id });
+        }}>+ Gegnertyp</button>
       </div>
     </div>
   );

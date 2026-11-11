@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useStore, type Tab } from '../store';
+import { isTextEntry } from '../keys';
 
 interface Step { tab?: Tab; sel?: string; title: string; text: string }
 
 // Reihenfolge = Arbeitsablauf: erst ansehen und spielen, dann Grafik → Objekte → Bewegung → Level → Sound → Export
 const STEPS: Step[] = [
   { title: 'Willkommen im SMS Shmup Maker', text: 'Hier baust du ein Shoot ’em Up für das Sega Master System und lädst es als echte ROM-Datei herunter. Die Tour zeigt dir alle Werkzeuge. Du kannst nebenbei alles ausprobieren.' },
-  { sel: 'header .primary', title: 'Sofort spielen', text: 'Das Demo-Projekt ist schon spielbar. „▶ Spielen“ baut die ROM und startet sie im eingebauten Emulator. Steuerung: Pfeiltasten, Z/Leertaste feuern, P Pause, R Neustart, Esc schließen.' },
-  { sel: '[data-tour="problems"]', title: 'Probleme', text: 'Hier stehen Fehler (✖) und Warnungen (⚠), z. B. eine gelöschte Formation oder zu viele Gegner gleichzeitig. Klick öffnet die Liste, ein Eintrag springt zur Ursache. Solange es Fehler gibt, ist Spielen gesperrt.' },
+  { sel: 'header .primary', title: 'Sofort spielen', text: '„▶ Spielen“ baut aus deinem Projekt die ROM und startet sie im eingebauten Emulator. Steuerung: Pfeiltasten, Z/Leertaste feuern, P Pause, R Neustart, Esc schließen.' },
+  { sel: '[data-tour="problems"]', title: 'Probleme', text: 'Hier stehen Fehler (✖) und Warnungen (⚠), z. B. eine gelöschte Formation oder zu viele Gegner gleichzeitig. Jede Meldung sagt, was zu tun ist. Klick öffnet die Liste, ein Eintrag springt zur Ursache (im Level bis zum Ereignis), Esc schließt sie. Solange es Fehler gibt, startet „▶ Spielen“ nicht, sondern öffnet diese Liste.' },
   { sel: '.stats', title: 'Hardware-Grenzen im Blick', text: 'Das Master System hat wenig Grafikspeicher: 256 verschiedene 8×8-Kacheln für den Hintergrund und 192 für Sprites. Die Balken zeigen, wie viel belegt ist. Rot heißt: so passt es nicht in die Konsole.' },
   { tab: 'palette', sel: '.color-grid', title: 'Paletten', text: 'Die Konsole kennt 64 Farben. Du hast zwei Paletten mit je 16 Farben: eine für den Hintergrund, eine für Sprites. Erst oben einen Platz wählen, dann hier die Farbe.' },
   { tab: 'tiles', sel: '.mt-list', title: 'Pinsel', text: 'Der Hintergrund wird aus 16×16-Pinseln gemalt. Jeder Pinsel ist ein eigenes Bild – „Duplizieren“ und Details ändern, z. B. Erde mit und ohne Gras.' },
@@ -20,11 +21,11 @@ const STEPS: Step[] = [
   { tab: 'formations', sel: '.panel.narrow .form', title: 'Kette oder Block', text: '„Kette“: Gegner folgen einander auf derselben Bahn. „Block“: eine starre Formation wie ein V. Anzahl, Abstand und Tempo per Regler; unter „Pfad“ gibt es Vorlagen und Spiegeln.' },
   { tab: 'formations', sel: '.timeline', title: 'Vorschau', text: 'Play, Zeitlupe und Schieberegler zeigen die Formation in Bewegung. Die Anzeige rechts warnt, wenn zu viele Sprites in einer Bildzeile liegen.' },
   { tab: 'levels', sel: '.level-side .list', title: 'Level', text: 'Jedes Level scrollt horizontal oder vertikal. Neue Level legst du mit „+ Horizontal“ oder „+ Vertikal“ an; die Reihenfolge bestimmt den Spielablauf.' },
-  { tab: 'levels', sel: '.level-side .form', title: 'Level-Einstellungen', text: 'Länge, Scrolltempo und Musik des Levels. Die geschätzte Spieldauer steht darunter.' },
+  { tab: 'levels', sel: '.level-side .form', title: 'Level-Einstellungen', text: 'Länge (in Feldern zu 16 px), Scrolltempo und Musik des Levels. Darunter steht die Spieldauer mit allen Tempo-Ereignissen.' },
   { tab: 'levels', sel: '.level-side .mt-list', title: 'Pinsel wählen', text: 'Wähle einen Pinsel …' },
   { tab: 'levels', sel: '.level-scroll', title: '… und male das Level', text: 'Linke Maustaste malt, rechte radiert. Oben gibt es Rechteck, Füllen und Pipette. Mausrad scrollt durch das Level; der grüne Rahmen ist der Startbildschirm.' },
-  { tab: 'levels', sel: '[data-tour="events"]', title: 'Gegner platzieren', text: 'Mit „Ereignisse“ setzt du Formationen ins Level: Sie starten, wenn die Markierung den Bildschirmrand erreicht. Ein angewählter Marker zeigt die Flugbahn. Weitere Typen: Tempo, Musik, Warten und Checkpoint.' },
-  { tab: 'levels', sel: '.level-side .primary', title: 'Level testen', text: 'Startet direkt dieses Level im Emulator. „▶ Ab hier“ (Taste P) startet mitten im Level an der aktuellen Ansicht. Im Spiel startet R neu, und „Unverwundbar“ hilft beim Feintuning.' },
+  { tab: 'levels', sel: '[data-tour="events"]', title: 'Gegner platzieren', text: 'Mit „Ereignisse“ setzt du Formationen ins Level: Sie starten, wenn der Marker den Bildschirmrand erreicht. Ein angewählter Marker zeigt die Flugbahn, die Leiste ändert dann ihn („Gewählt“), auch seine Position und mit „früher“/„später“ die Reihenfolge an derselben Stelle. Esc hebt die Auswahl auf, Entf löscht. Weitere Typen: Tempo, Musik, Warten und Checkpoint – der Hinweis unter der Leiste erklärt jeden.' },
+  { tab: 'levels', sel: '.level-side .primary', title: 'Level testen', text: 'Startet direkt dieses Level im Emulator. „▶ Ab hier“ (Taste P) startet mitten im Level am Rand der aktuellen Ansicht; blasse Ereignisse liegen davor. Danach folgen die übrigen Level. Im Spiel startet R neu, und „Unverwundbar“ hilft beim Feintuning.' },
   { tab: 'sound', sel: '.roll-scroll', title: 'Musik', text: 'Drei Tonkanäle und ein Rauschkanal für Schlagzeug. Klick setzt eine Note (du hörst sie sofort), Rechtsklick setzt „Aus“. „▶ Abspielen“ klingt genau wie im Spiel.' },
   { tab: 'sound', sel: '[data-tour="sfx"]', title: 'Soundeffekte', text: 'Hier baust du Effekte aus Tonhöhenverlauf oder Rauschen und ordnest sie Schuss, Explosion und Treffer zu.' },
   { sel: '[data-tour="export"]', title: 'Fertig: ROM herunterladen', text: 'Die .sms-Datei läuft in Emulatoren wie Emulicious oder auf echter Hardware (z. B. Everdrive). Dein Projekt speichert sich automatisch im Browser – „💾 Projekt“ sichert es zusätzlich als Datei.' },
@@ -56,6 +57,9 @@ export function Tour({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      // Pfeile gehören dem Feld (Cursor, Regler, Auswahl), nicht der Tour
+      const t = e.target as HTMLInputElement;
+      if (isTextEntry(t) || t.tagName === 'SELECT' || t.type === 'range') return;
       if (e.key === 'ArrowRight') setI((n) => Math.min(STEPS.length - 1, n + 1));
       if (e.key === 'ArrowLeft') setI((n) => Math.max(0, n - 1));
     };

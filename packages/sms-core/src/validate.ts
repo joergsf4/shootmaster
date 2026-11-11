@@ -32,8 +32,8 @@ export function validateProject(p: unknown): string | null {
 // ---------- Inhaltliche Prüfung (Problem-Panel) ----------
 
 export type EditorTab = 'palette' | 'tiles' | 'sprites' | 'objects' | 'formations' | 'levels' | 'sound';
-/** Sprungziel im Editor: Tab und Element-ID */
-export interface DiagRef { tab: EditorTab; id?: string }
+/** Sprungziel im Editor: Tab und Element-ID; Level: events = Ereignis-Werkzeug öffnen, pos = dorthin scrollen und das Ereignis an dieser Position wählen */
+export interface DiagRef { tab: EditorTab; id?: string; events?: boolean; pos?: number }
 export interface Diagnostic { severity: 'error' | 'warn'; msg: string; ref: DiagRef }
 /** Wer ein Element verwendet */
 export interface Use { label: string; ref: DiagRef }
@@ -57,35 +57,54 @@ export const formationUsers = (p: Project, id: string): Use[] =>
   p.levels.filter((l) => l.events.some((e) => e.type === 'spawn' && e.formationId === id)).map((l) => ({ label: `Level „${l.name}“`, ref: { tab: 'levels', id: l.id } }));
 
 /**
+ * Kamera-Zeitplan eines Levels wie in der Engine: Frames vom Start bis zum Levelende, Tempo-Ereignisse eingerechnet.
+ * on(e, pos, t) läuft für jedes ausgelöste Ereignis und darf die Zeit vorstellen (z. B. „Warten“).
+ * stopAt: Position, an der die Kamera für immer stehen bleibt (Tempo 0 ohne Freigabe), sonst null.
+ */
+export function levelDuration(lv: Level, on?: (e: LevelEvent, pos: number, t: number) => number): { frames: number; stopAt: number | null } {
+  const camMax = levelCamMax(lv);
+  let sp = levelSpeed(lv), cam = 0, t = 0;
+  // shortcut: Rundung je Abschnitt, ±1 Frame je Tempowechsel
+  const ride = (to: number) => { t += Math.ceil(((to - cam) * 16) / sp); cam = to; };
+  for (const e of sortedEvents(lv)) {
+    const pos = Math.max(0, Math.min(camMax, Math.round(e.pos)));
+    if (pos > cam) {
+      if (sp === 0) return { frames: t, stopAt: cam }; // Kamera steht: spätere Ereignisse lösen nie aus
+      ride(pos);
+    }
+    if (e.type === 'speed') sp = speedByte(e.speed ?? 0);
+    if (on) t = on(e, pos, t);
+  }
+  if (cam < camMax) {
+    if (sp === 0) return { frames: t, stopAt: cam };
+    ride(camMax);
+  }
+  return { frames: t, stopAt: null };
+}
+
+/**
  * Höchstzahl gleichzeitig belegter Gegner-Slots in einem Level, wenn kein Gegner abgeschossen wird.
  * Ein Mitglied belegt seinen Slot ab dem Auslösen bis zum Pfadende (Wartezeit + Pfad-Frames).
  * Tempo-Ereignisse ändern das Kamera-Timing, „Warten“ hält die Zeit an, bis alle bisherigen Gegner weg sind.
  * shortcut: Abschüsse und Kollisionen geben Slots früher frei → obere Schranke; genauer erst, wenn Fehlalarme stören.
  */
 export function peakEnemies(p: Project, lv: Level): { count: number; pos: number } {
-  const camMax = levelCamMax(lv);
   const frames = new Map<string, number>();
   const marks: [number, number, number][] = []; // Frame, ±1, Position
-  let sp = levelSpeed(lv), cam = 0, t = 0, lastEnd = 0;
-  for (const e of sortedEvents(lv)) {
-    const pos = Math.max(0, Math.min(camMax, Math.round(e.pos)));
-    if (pos > cam) {
-      if (sp === 0) break; // Kamera steht: spätere Ereignisse lösen nie aus
-      t += Math.ceil(((pos - cam) * 16) / sp); // shortcut: Rundung je Abschnitt, ±1 Frame je Tempowechsel
-      cam = pos;
-    }
-    if (e.type === 'speed') sp = speedByte(e.speed ?? 0);
-    if (e.type === 'waitClear') t = Math.max(t, lastEnd);
-    if (e.type !== 'spawn') continue;
+  let lastEnd = 0;
+  levelDuration(lv, (e, pos, t) => {
+    if (e.type === 'waitClear') return Math.max(t, lastEnd);
+    if (e.type !== 'spawn') return t;
     const f = p.formations.find((x) => x.id === e.formationId);
-    if (!f || f.points.length < 2) continue;
+    if (!f || f.points.length < 2) return t;
     let n = frames.get(f.id);
     if (n === undefined) frames.set(f.id, (n = framePositions(f.points, f.speed).length));
     for (const m of formationMembers(f)) {
       marks.push([t, 1, pos], [t + m.delay + n, -1, pos]);
       lastEnd = Math.max(lastEnd, t + m.delay + n);
     }
-  }
+    return t;
+  });
   marks.sort((a, b) => a[0] - b[0] || a[1] - b[1]); // frei werdende Slots vor neuen im selben Frame
   let cur = 0, count = 0, at = 0;
   for (const [, d, pos] of marks) { cur += d; if (cur > count) { count = cur; at = pos; } }
@@ -102,14 +121,16 @@ export function lintProject(p: Project): Diagnostic[] {
   const objects: DiagRef = { tab: 'objects' };
 
   // Spieler & Gegner
-  if (!sprite.has(p.player.spriteId)) add('error', 'Spieler: Sprite fehlt', objects);
-  if (!sprite.has(p.player.shotSpriteId)) add('error', 'Schuss: Sprite fehlt', objects);
-  if (!sprite.has(p.explosionSpriteId)) add('error', 'Explosion: Sprite fehlt', objects);
+  if (!sprite.has(p.player.spriteId)) add('error', 'Spieler: Sprite fehlt – neu wählen', objects);
+  if (!sprite.has(p.player.shotSpriteId)) add('error', 'Schuss: Sprite fehlt – neu wählen', objects);
+  if (!sprite.has(p.explosionSpriteId)) add('error', 'Explosion: Sprite fehlt – neu wählen', objects);
   for (const e of p.enemyTypes) {
     const ref: DiagRef = { tab: 'objects', id: e.id };
-    if (!sprite.has(e.spriteId)) add('error', `Gegnertyp „${e.name}“: Sprite fehlt`, ref);
-    if (e.shot.pattern !== 'none' && !sprite.has(e.shot.spriteId)) add('error', `Gegnertyp „${e.name}“: Schuss-Sprite fehlt`, ref);
-    if (!enemyTypeUsers(p, e.id).length) add('warn', `Gegnertyp „${e.name}“ wird in keiner Formation verwendet`, ref);
+    if (!sprite.has(e.spriteId)) add('error', `Gegnertyp „${e.name}“: Sprite fehlt – neu wählen`, ref);
+    if (e.shot.pattern !== 'none' && !sprite.has(e.shot.spriteId)) add('error', `Gegnertyp „${e.name}“: Schuss-Sprite fehlt – neu wählen`, ref);
+    else if (e.shot.pattern !== 'none' && e.shot.spriteId === p.player.shotSpriteId)
+      add('warn', `Gegnertyp „${e.name}“: Schuss sieht aus wie der Spielerschuss – eigenes Sprite wählen`, ref);
+    if (!enemyTypeUsers(p, e.id).length) add('warn', `Gegnertyp „${e.name}“ wird in keiner Formation verwendet – dort wählen oder löschen`, ref);
   }
 
   // Formationen: Fehler nur, wenn sie in einem Level vorkommen (sonst baut der Compiler sie nicht ein)
@@ -117,10 +138,10 @@ export function lintProject(p: Project): Diagnostic[] {
     const ref: DiagRef = { tab: 'formations', id: f.id };
     const used = formationUsers(p, f.id).length > 0;
     const sev = used ? 'error' : 'warn';
-    if (!etype.has(f.enemyTypeId)) add(sev, `Formation „${f.name}“: Gegnertyp fehlt`, ref);
-    if (f.points.length < 2) add(sev, `Formation „${f.name}“: Pfad braucht mind. 2 Punkte`, ref);
-    if (f.count > MAX_ENEMIES) add('warn', `Formation „${f.name}“: ${f.count} Gegner, höchstens ${MAX_ENEMIES} erscheinen`, ref);
-    if (!used) add('warn', `Formation „${f.name}“ ist in keinem Level platziert`, ref);
+    if (!etype.has(f.enemyTypeId)) add(sev, `Formation „${f.name}“: Gegnertyp fehlt – neu wählen`, ref);
+    if (f.points.length < 2) add(sev, `Formation „${f.name}“: Pfad braucht mind. 2 Punkte – in die Fläche klicken`, ref);
+    if (f.count > MAX_ENEMIES) add('warn', `Formation „${f.name}“: ${f.count} Gegner, höchstens ${MAX_ENEMIES} erscheinen – Anzahl senken`, ref);
+    if (!used) add('warn', `Formation „${f.name}“ ist in keinem Level platziert – im Level mit „◆ Ereignisse“ setzen oder löschen`, ref);
   }
 
   // Level
@@ -133,36 +154,32 @@ export function lintProject(p: Project): Diagnostic[] {
       const v = lv.map[i] ?? 0;
       if (!Number.isInteger(v) || v < 0 || v >= p.metatiles.length) bad++;
     }
-    if (bad) add('error', `${name}: ${bad} Felder mit fehlendem Pinsel`, ref);
-    if (!lv.events.some((e) => e.type === 'spawn')) add('warn', `${name}: keine Gegner-Ereignisse`, ref);
+    if (bad) add('error', `${name}: ${bad === 1 ? '1 Feld' : `${bad} Felder`} mit fehlendem Pinsel – neu malen`, ref);
+    if (!lv.events.some((e) => e.type === 'spawn')) add('warn', `${name}: keine Gegner-Ereignisse – mit „◆ Ereignisse“ Formationen setzen`, { ...ref, events: true });
     for (const e of lv.events) {
       const at = Math.round(e.pos);
-      if (e.type === 'spawn' && !form.has(e.formationId ?? '')) add('error', `${name}: Ereignis bei ${at} verweist auf gelöschte Formation`, ref);
-      else if (e.type === 'music' && e.musicId && !p.songs.some((s) => s.id === e.musicId)) add('warn', `${name}: Musik-Ereignis bei ${at}: Song fehlt`, ref);
-      else if (e.pos > camMax) add('warn', `${name}: Ereignis bei ${at} liegt hinter dem Levelende und kommt schon bei ${camMax}`, ref);
+      const evRef: DiagRef = { ...ref, events: true, pos: at };
+      if (e.type === 'spawn' && !form.has(e.formationId ?? '')) add('error', `${name}: Ereignis bei ${at} px verweist auf gelöschte Formation – neu wählen oder löschen`, evRef);
+      else if (e.type === 'music' && e.musicId && !p.songs.some((s) => s.id === e.musicId)) add('warn', `${name}: Musik-Ereignis bei ${at} px: Song wurde gelöscht – neu wählen`, evRef);
+      else if (e.pos > camMax) add('warn', `${name}: Ereignis bei ${at} px liegt hinter dem Levelende und kommt schon bei ${camMax} px – verschieben`, evRef);
     }
     // Tempo 0 ohne spätere Freigabe an derselben Stelle: das Level endet nie
-    let sp = levelSpeed(lv), cam = 0;
-    for (const e of sortedEvents(lv)) {
-      const pos = Math.max(0, Math.min(camMax, Math.round(e.pos)));
-      if (pos > cam && sp === 0) break;
-      cam = pos;
-      if (e.type === 'speed') sp = speedByte(e.speed ?? 0);
-    }
-    if (sp === 0 && cam < camMax) add('warn', `${name}: Kamera bleibt bei ${cam} stehen (Tempo 0), das Level endet nie`, ref);
+    const stop = levelDuration(lv).stopAt;
+    if (stop !== null)
+      add('warn', `${name}: Kamera bleibt bei ${stop} px stehen (Tempo 0), das Level endet nie – an derselben Stelle ein Tempo-Ereignis anhängen`, { ...ref, events: true, pos: stop });
     const peak = peakEnemies(p, lv);
     if (peak.count > MAX_ENEMIES)
-      add('warn', `${name}: bis zu ${peak.count} Gegner gleichzeitig (bei ${peak.pos}), höchstens ${MAX_ENEMIES} erscheinen`, ref);
-    if (lv.musicId && !p.songs.some((s) => s.id === lv.musicId)) add('warn', `${name}: Musik fehlt`, ref);
+      add('warn', `${name}: bis zu ${peak.count} Gegner gleichzeitig (bei ${peak.pos} px), höchstens ${MAX_ENEMIES} erscheinen – Abstand vergrößern oder „Warten“ einfügen`, { ...ref, events: true, pos: peak.pos });
+    if (lv.musicId && !p.songs.some((s) => s.id === lv.musicId)) add('warn', `${name}: Musik wurde gelöscht – neu wählen`, ref);
   }
 
   // Sound
   for (const [k, label] of [['shot', 'Schuss'], ['explosion', 'Explosion'], ['hit', 'Treffer']] as const)
-    if (p.sounds[k] && !p.sfx.some((s) => s.id === p.sounds[k])) add('warn', `Sound „${label}“: Effekt fehlt`, { tab: 'sound' });
+    if (p.sounds[k] && !p.sfx.some((s) => s.id === p.sounds[k])) add('warn', `Sound „${label}“: Effekt wurde gelöscht – neu wählen`, { tab: 'sound' });
 
   // Unbenutzte Sprites
   for (const s of p.sprites)
-    if (!spriteUsers(p, s.id).length) add('warn', `Sprite „${s.name}“ wird nicht verwendet`, { tab: 'sprites', id: s.id });
+    if (!spriteUsers(p, s.id).length) add('warn', `Sprite „${s.name}“ wird nicht verwendet – zuordnen oder löschen`, { tab: 'sprites', id: s.id });
 
   return out;
 }

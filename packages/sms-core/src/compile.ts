@@ -21,6 +21,18 @@ export const speedByte = (speed: number) => Math.max(0, Math.min(0x7f, Math.roun
 export const levelSpeed = (lv: Level) => speedByte(lv.speed);
 /** Ereignisse in Engine-Reihenfolge: nach Position, gleiche Position in Listenreihenfolge */
 export const sortedEvents = (lv: Level) => [...lv.events].sort((a, c) => a.pos - c.pos);
+/** Nächstes Ereignis an derselben Position in Richtung dir (−1 früher, +1 später); −1, wenn es keins gibt */
+export function stackNeighbor(lv: Level, i: number, dir: -1 | 1): number {
+  for (let j = i + dir; j >= 0 && j < lv.events.length; j += dir) if (lv.events[j].pos === lv.events[i].pos) return j;
+  return -1;
+}
+/** Was Kürzen auf n Felder kostet: abgeschnittene Spalten/Zeilen (0, wenn dort nichts gemalt ist) und Ereignisse, die ans neue Ende rücken */
+export function shrinkLoss(lv: Level, n: number): { cut: number; events: number } {
+  const a = ACROSS[lv.orientation];
+  const painted = lv.map.slice(n * a, lv.length * a).some((v) => v);
+  const camMax = levelCamMax({ ...lv, length: n });
+  return { cut: painted ? Math.max(0, lv.length - n) : 0, events: lv.events.filter((e) => e.pos > camMax).length };
+}
 const EVENT_CODE = { spawn: 1, speed: 2, music: 3, waitClear: 4, checkpoint: 5 } as const;
 const SHOT_CODE = { none: 0, straight: 1, aimed: 2, fan3: 3 } as const;
 

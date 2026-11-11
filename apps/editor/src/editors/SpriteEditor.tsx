@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { layoutSprites, MAX_SPRITE_TILES, crop, spriteUsers, type SpriteGfx, type Use } from '@sms/core';
+import { layoutSprites, MAX_SPRITE_TILES, crop, spriteUsers, type SpriteGfx } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { PixelEditor } from '../components/PixelEditor';
 import { spriteCanvases } from '../gfx';
 import { UsedBy } from '../components/Problems';
+import { NumberInput } from '../components/NumberInput';
 
 export function SpriteEditor() {
   const p = useProject();
@@ -13,8 +14,9 @@ export function SpriteEditor() {
   const used = useMemo(() => layoutSprites(p.sprites).tiles.length, [p.sprites]);
   const idx = p.sprites.findIndex((x) => x.id === s?.id);
   const up = (fn: (d: SpriteGfx) => void, coalesce?: string) => edit((d) => { fn(d.sprites[idx]); }, coalesce);
-  const [blocked, setBlocked] = useState<Use[] | null>(null);
-  useEffect(() => { setBlocked(null); }, [s?.id]);
+  /** Löschen gesperrt: Leiste mit den Verwendern, die bei jedem Rendern neu ermittelt werden */
+  const [blocked, setBlocked] = useState(false);
+  useEffect(() => { setBlocked(false); }, [s?.id]);
 
   const resize = (w: number, h: number) => up((d) => {
     d.frames = d.frames.map((f) => {
@@ -53,11 +55,11 @@ export function SpriteEditor() {
           {s && <button onClick={() => { const id = uid('spr'); edit((d) => { d.sprites.push({ ...JSON.parse(JSON.stringify(s)), id, name: s.name + ' Kopie' }); }); select({ sprite: id }); }}>Duplizieren</button>}
           {s && <button onClick={() => {
             const users = spriteUsers(p, s.id);
-            if (users.length) { setBlocked(users); return; }
+            if (users.length) { setBlocked(true); return; }
             edit((d) => { d.sprites.splice(idx, 1); });
           }}>Löschen</button>}
         </div>
-        {s && blocked && <UsedBy what={`Sprite „${s.name}“`} users={blocked} onClose={() => setBlocked(null)} />}
+        {s && blocked && <UsedBy what={`Sprite „${s.name}“`} users={spriteUsers(p, s.id)} onClose={() => setBlocked(false)} />}
         <p className="hint">Sprites werden in 8×16-Hardware-Sprites zerlegt; leere Zellen kosten nichts, gleiche Zellen werden geteilt. Max. 8 Hardware-Sprites pro Bildzeile – sonst Flackern.</p>
       </div>
       {s && (
@@ -66,7 +68,7 @@ export function SpriteEditor() {
             <label>Name <input value={s.name} onChange={(e) => up((d) => { d.name = e.target.value; }, `spname-${s.id}`)} /></label>
             <label>Breite <select value={s.width} onChange={(e) => resize(+e.target.value, s.height)}>{[8, 16, 24, 32, 40, 48].map((v) => <option key={v}>{v}</option>)}</select></label>
             <label>Höhe <select value={s.height} onChange={(e) => resize(s.width, +e.target.value)}>{[16, 32, 48].map((v) => <option key={v}>{v}</option>)}</select></label>
-            <label>Frame-Dauer <input type="number" min={1} max={60} value={s.frameDelay} onChange={(e) => up((d) => { d.frameDelay = Math.max(1, +e.target.value); })} /></label>
+            <label>Frame-Dauer <NumberInput min={1} max={60} value={s.frameDelay} title="Frames je Bild (1 bis 60)" onCommit={(n, c) => up((d) => { d.frameDelay = n; }, c)} /></label>
             <span className={`budget ${perLine > 8 ? 'bad' : perLine > 4 ? 'warn' : ''}`}>{perLine} HW-Sprites/Zeile</span>
           </div>
           <div className="frames">

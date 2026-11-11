@@ -1,51 +1,90 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ACROSS, framePositions, formationMembers, LEVEL_EVENT_TYPES, sortedEvents, type Level, type LevelEvent, type LevelEventType, type Orientation } from '@sms/core';
-import { uid, useStore, useProject } from '../store';
+import { ACROSS, framePositions, formationMembers, LEVEL_EVENT_TYPES, levelCamMax, levelDuration, shrinkLoss, sortedEvents, stackNeighbor, type Level, type LevelEvent, type LevelEventType, type Orientation, type Project } from '@sms/core';
+import { uid, useStore, useProject, type LevelTool as Tool } from '../store';
 import { metatileCanvases, spriteCanvases } from '../gfx';
+import { isTextEntry } from '../keys';
 import { MetatileList } from './TileEditor';
+import { NumberInput } from '../components/NumberInput';
 
-type Tool = 'brush' | 'rect' | 'fill' | 'pick' | 'erase' | 'events';
 /** Vorlage für neue Ereignisse = Werte des gewählten Ereignisses */
 type EvTpl = Required<Omit<LevelEvent, 'pos'>>;
 
 const EV_LABEL: Record<LevelEventType, string> = { spawn: 'Formation', speed: 'Tempo', music: 'Musik', waitClear: 'Warten, bis alle weg sind', checkpoint: 'Checkpoint' };
 const EV_COLOR: Record<LevelEventType, string> = { spawn: '#ff5a5a', speed: '#4fc3f7', music: '#c792ea', waitClear: '#ffa04f', checkpoint: '#2fbf71' };
+/** Hinweiszeile, solange ein Ereignis dieses Typs gewählt ist */
+const EV_HINT: Record<LevelEventType, string> = {
+  spawn: 'Die Formation startet, wenn diese Linie den Bildschirmrand erreicht. Der gestrichelte Rahmen zeigt den Bildschirm in diesem Moment.',
+  speed: 'Ab hier scrollt die Kamera in diesem Tempo. „Stopp“ hält sie an; weiter geht es nur mit einem späteren Tempo-Ereignis an derselben Stelle (z. B. nach „Warten“).',
+  music: 'Ab hier läuft dieser Song, bei „Stille“ keine Musik.',
+  waitClear: 'Kamera hält hier, bis alle Gegner abgeschossen oder weggeflogen sind.',
+  checkpoint: 'Nach Game Over startet das Level hier.',
+};
+/** Zahl deutsch mit höchstens 4 Nachkommastellen */
+const de = (n: number) => String(+n.toFixed(4)).replace('.', ',');
 const makeEvent = (pos: number, t: EvTpl): LevelEvent =>
   t.type === 'spawn' ? { pos, type: t.type, formationId: t.formationId }
     : t.type === 'speed' ? { pos, type: t.type, speed: t.speed }
       : t.type === 'music' ? { pos, type: t.type, musicId: t.musicId }
         : { pos, type: t.type };
+const evLabel = (p: Project, ev: LevelEvent) =>
+  ev.type === 'spawn' ? p.formations.find((x) => x.id === ev.formationId)?.name ?? '?'
+    : ev.type === 'speed' ? (ev.speed ? `Tempo ${de(ev.speed)}` : 'Stopp')
+      : ev.type === 'music' ? `Musik: ${ev.musicId ? p.songs.find((s) => s.id === ev.musicId)?.name ?? '?' : 'Stille'}`
+        : ev.type === 'waitClear' ? 'Warten' : 'Checkpoint';
 
-export function LevelEditor({ onPlay }: { onPlay: (levelId: string, startCam?: number) => void }) {
+/** keysOff: Spiel oder Tour offen, dann gehören Esc/Entf/P ihnen */
+export function LevelEditor({ onPlay, keysOff }: { onPlay: (levelId: string, startCam?: number) => void; keysOff: boolean }) {
   const p = useProject();
   const { edit, sel, select } = useStore();
   const lv = p.levels.find((l) => l.id === sel.level) ?? p.levels[0];
   const li = p.levels.findIndex((l) => l.id === lv?.id);
-  const [tool, setTool] = useState<Tool>('brush');
+  const tool = sel.levelTool;
+  const setTool = (t: Tool) => select({ levelTool: t });
   const [zoom, setZoom] = useState(2);
   const [evSel, setEvSel] = useState<number | null>(null);
   const [tpl, setTplState] = useState<EvTpl>({ type: 'spawn', formationId: p.formations[0]?.id ?? '', speed: 0, musicId: '' });
+  /** gewähltes Ereignis; undefined, wenn keins gewählt ist */
+  const ev = evSel === null ? undefined : lv?.events[evSel];
   const setTpl = (patch: Partial<EvTpl>, key?: string) => {
     const t = { ...tpl, ...patch };
     setTplState(t);
-    if (evSel !== null) edit((d) => { const L = d.levels[li]; L.events[evSel] = makeEvent(L.events[evSel].pos, t); }, key);
+    if (ev && evSel !== null) edit((d) => { const L = d.levels[li]; L.events[evSel] = makeEvent(L.events[evSel].pos, t); }, key);
   };
-  const pickEvent = (i: number | null) => {
-    setEvSel(i);
-    const ev = i === null ? undefined : lv.events[i]; // gerade angelegt: noch nicht in lv, Vorlage stimmt schon
-    if (ev) { const { pos: _, ...f } = ev; setTplState((t) => ({ ...t, ...f })); }
-  };
-  const [showGrid, setShowGrid] = useState(true);
+  // Auswahl folgt den Daten (Undo, Löschen, Levelwechsel): verschwundenes Ereignis abwählen, sonst Leiste aus dem Ereignis füllen
+  useEffect(() => {
+    if (evSel === null) return;
+    if (!ev) { setEvSel(null); return; }
+    const { pos: _, ...f } = ev;
+    setTplState((t) => ({ ...t, ...f }));
+  }, [ev, evSel]);
   useEffect(() => { setEvSel(null); }, [sel.level]);
+  // Sprung aus dem Problem-Panel: Ereignis an der Position wählen (LevelCanvas scrollt vorher hin), dann Sprungziel verbrauchen
+  // shortcut: wählt das erste Ereignis an der Position; Index mitgeben, wenn gestapelte Fehler-Ereignisse verwirren
+  const focus = useStore((s) => s.focus);
+  useEffect(() => {
+    if (!focus || !lv) return;
+    const i = lv.events.findIndex((e) => Math.round(e.pos) === focus.pos);
+    setEvSel(i >= 0 ? i : null);
+    useStore.setState({ focus: null });
+  }, [focus]);
+  /** getippte, noch nicht übernommene Länge (Vorwarnung beim Kürzen) */
+  const [lenDraft, setLenDraft] = useState<number | null>(null);
+  const [showGrid, setShowGrid] = useState(true);
   // Kameraposition am linken (h) bzw. unteren (v) Rand der Ansicht, setzt LevelCanvas
   const camAt = useRef(0);
-  const playHere = useRef(() => {});
-  playHere.current = () => { if (lv) onPlay(lv.id, camAt.current); };
+  const keys = useRef({ play: () => {}, deselect: () => {}, del: () => {} });
+  keys.current = {
+    play: () => { if (lv && !keysOff) onPlay(lv.id, camAt.current); },
+    deselect: () => { if (!keysOff) setEvSel(null); },
+    del: () => { if (!keysOff && ev && evSel !== null) { edit((d) => { d.levels[li].events.splice(evSel, 1); }); setEvSel(null); } },
+  };
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
-      const t = (e.target as HTMLElement).tagName;
-      if (e.code !== 'KeyP' || e.repeat || e.ctrlKey || e.metaKey || e.altKey || t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
-      playHere.current();
+      if (e.ctrlKey || e.metaKey || e.altKey || isTextEntry(e.target)) return;
+      if (e.key === 'Escape') keys.current.deselect();
+      else if (e.key === 'Delete') keys.current.del();
+      // P auch in Auswahlfeld/Regler: „Formation umstellen, sofort testen“; preventDefault verhindert die Tippauswahl
+      else if (e.code === 'KeyP' && !e.repeat) { e.preventDefault(); keys.current.play(); }
     };
     window.addEventListener('keydown', kd);
     return () => window.removeEventListener('keydown', kd);
@@ -58,18 +97,34 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string, startCam?: n
     select({ level: id });
   };
 
+  // Neue Formations-Ereignisse: gelöschte/fehlende Vorlage durch die erste Formation ersetzen
+  const newTpl = tpl.type === 'spawn' && !p.formations.some((f) => f.id === tpl.formationId) ? { ...tpl, formationId: p.formations[0]?.id ?? '' } : tpl;
+
   if (!lv) return <div className="panel"><button onClick={() => addLevel('h')}>+ Level</button></div>;
 
+  const minLen = lv.orientation === 'h' ? 16 : 12;
   const setLen = (n: number) => edit((d) => {
     const L = d.levels[li];
     const a = ACROSS[L.orientation];
-    n = Math.max(L.orientation === 'h' ? 16 : 12, Math.min(1000, n));
+    n = Math.max(minLen, Math.min(1000, n));
     L.map = Array.from({ length: n * a }, (_, i) => L.map[i] ?? 0);
     L.length = n;
     // Wellen hinter dem neuen Levelende ans Ende holen (die Kamera hält dort an)
     const camMax = Math.max(0, n * 16 - (L.orientation === 'h' ? 256 : 192));
     L.events.forEach((e) => { e.pos = Math.min(e.pos, camMax); });
   });
+  const loss = lenDraft !== null && lenDraft < lv.length ? shrinkLoss(lv, lenDraft) : null;
+  const lossText = loss && [
+    loss.cut && `Kürzt die Karte um ${loss.cut} ${lv.orientation === 'h' ? 'Spalten' : 'Zeilen'}`,
+    loss.events && `${loss.events === 1 ? '1 Ereignis rückt' : `${loss.events} Ereignisse rücken`} ans Levelende`,
+  ].filter(Boolean).join(', ');
+  const dur = levelDuration(lv);
+  const speedText = (v: number) => v ? `${de(v)} px/Frame (${v === lv.speed ? '= Leveltempo' : `${de(v / lv.speed)}× Leveltempo`})` : 'Stopp';
+  const swap = (j: number) => {
+    if (evSel === null || j < 0) return;
+    edit((d) => { const E = d.levels[li].events; [E[evSel], E[j]] = [E[j], E[evSel]]; });
+    setEvSel(j);
+  };
 
   return (
     <div className="level-editor">
@@ -92,16 +147,19 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string, startCam?: n
         <div className="form">
           <label>Name <input value={lv.name} onChange={(e) => edit((d) => { d.levels[li].name = e.target.value; }, 'lvname')} /></label>
           <label>Richtung <b>{lv.orientation === 'h' ? 'horizontal ⇢' : 'vertikal ⇡'}</b></label>
-          <label>Länge <LengthInput value={lv.length} onCommit={setLen} /> Metatiles ({(lv.length * 16 / (lv.orientation === 'h' ? 256 : 192)).toFixed(1)} Bildschirme)</label>
-          <label>Scrolltempo <input type="range" min={0.0625} max={3} step={0.0625} value={lv.speed} onChange={(e) => edit((d) => { d.levels[li].speed = +e.target.value; }, 'lvspeed')} /> {lv.speed} px/F</label>
+          <label>Länge <NumberInput value={lv.length} min={minLen} max={1000} live={false} title={`${minLen} bis 1000 Felder, je 16 px`} onCommit={setLen} onDraft={setLenDraft} /> Felder (16 px)</label>
+          {lossText && <span className="hint warn-text">{lossText} (Strg+Z macht es rückgängig)</span>}
+          <label>Scrolltempo <input type="range" min={0.0625} max={3} step={0.0625} value={lv.speed} onChange={(e) => edit((d) => { d.levels[li].speed = +e.target.value; }, 'lvspeed')} /> {lv.speed} px/Frame</label>
           <label>Musik <select value={lv.musicId ?? ''} onChange={(e) => edit((d) => { d.levels[li].musicId = e.target.value; })}>
             <option value="">– Stille –</option>
             {p.songs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select></label>
-          {/* shortcut: ohne Tempo-/Warte-Ereignisse gerechnet; genauer, wenn die Dauer wichtig wird */}
-          <label>Dauer ≈ <b>{(Math.max(0, lv.length * 16 - (lv.orientation === 'h' ? 256 : 192)) / Math.max(lv.speed, 0.01) / 60).toFixed(0)} s</b></label>
+          <label title="Scrollzeit bis zum Levelende mit allen Tempo-Ereignissen; „Warten“ kommt mit der Kampfzeit dazu">Dauer <span><b>{dur.stopAt !== null
+            ? `endet nie (Stopp bei ${dur.stopAt} px)`
+            : `≈ ${Math.round(dur.frames / 60)} s${lv.events.some((e) => e.type === 'waitClear') ? ' + Kampfzeit' : ''}`}</b>
+            {' '}· {de(+(lv.length * 16 / (lv.orientation === 'h' ? 256 : 192)).toFixed(1))} Bildschirme</span></label>
         </div>
-        <button className="primary" onClick={() => onPlay(lv.id)}>▶ Dieses Level spielen</button>
+        <button className="primary" onClick={() => onPlay(lv.id)} title="Startet am Levelanfang; danach folgen die übrigen Level">▶ Dieses Level spielen</button>
         <h3>Pinsel</h3>
         <MetatileList selected={sel.metatile} onSelect={(i) => { select({ metatile: i }); if (tool === 'events' || tool === 'erase' || tool === 'pick') setTool('brush'); }} />
       </div>
@@ -115,58 +173,62 @@ export function LevelEditor({ onPlay }: { onPlay: (levelId: string, startCam?: n
           <span className="sep" />
           <label>Zoom <select value={zoom} onChange={(e) => setZoom(+e.target.value)}>{[1, 2, 3].map((z) => <option key={z} value={z}>{z}×</option>)}</select></label>
           <label className="check"><input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} /> Raster</label>
-          <button onClick={() => playHere.current()} title="Spielt ab dem linken (horizontal) bzw. unteren (vertikal) Rand der Ansicht (Taste P)">▶ Ab hier</button>
+          <button onClick={() => keys.current.play()} title="Spielt ab dem linken (horizontal) bzw. unteren (vertikal) Rand der Ansicht (Taste P); danach folgen die übrigen Level">▶ Ab hier (P)</button>
           {tool === 'events' && (
             <>
               <span className="sep" />
-              <label>Typ <select value={tpl.type} onChange={(e) => setTpl({ type: e.target.value as LevelEventType })}>
-                {LEVEL_EVENT_TYPES.map((t) => <option key={t} value={t}>{EV_LABEL[t]}</option>)}</select></label>
-              {tpl.type === 'spawn' && <label>Formation <select value={tpl.formationId} onChange={(e) => setTpl({ formationId: e.target.value })}>
+              <b>{ev ? `Gewählt: ${evLabel(p, ev)}` : 'Neu:'}</b>
+              {/* Tempo startet beim Leveltempo, nicht bei Stopp (das hielte die Kamera für immer an) */}
+              <label>Typ <select value={tpl.type} onChange={(e) => { const type = e.target.value as LevelEventType; setTpl(type === 'speed' && tpl.type !== 'speed' ? { type, speed: lv.speed } : { type }); }}>
+                {LEVEL_EVENT_TYPES.map((t) => <option key={t} value={t} disabled={t === 'spawn' && !p.formations.length}>{EV_LABEL[t]}</option>)}</select></label>
+              {tpl.type === 'spawn' && <label>Formation <select value={ev ? tpl.formationId : newTpl.formationId} onChange={(e) => setTpl({ formationId: e.target.value })}>
                 {p.formations.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>}
               {tpl.type === 'speed' && <label>Tempo <input type="range" min={0} max={3} step={0.0625} value={tpl.speed}
-                onChange={(e) => setTpl({ speed: +e.target.value }, `evspeed-${lv.id}-${evSel}`)} /> {tpl.speed ? `${tpl.speed} px/F` : 'Stopp'}</label>}
+                onChange={(e) => setTpl({ speed: +e.target.value }, `evspeed-${lv.id}-${evSel}`)} /> {speedText(tpl.speed)}</label>}
+              {tpl.type === 'speed' && <>
+                <button onClick={() => setTpl({ speed: 0 })} title="Kamera anhalten">Stopp</button>
+                <button onClick={() => setTpl({ speed: lv.speed })} title={`Zurück zum Scrolltempo des Levels (${de(lv.speed)} px/Frame)`}>Leveltempo</button>
+              </>}
               {tpl.type === 'music' && <label>Song <select value={tpl.musicId} onChange={(e) => setTpl({ musicId: e.target.value })}>
                 <option value="">– Stille –</option>
                 {p.songs.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>}
-              {evSel !== null && <button title="Neues Ereignis an derselben Position, läuft direkt danach ab" onClick={() => {
-                edit((d) => { const L = d.levels[li]; L.events.splice(evSel + 1, 0, makeEvent(L.events[evSel].pos, tpl)); });
-                setEvSel(evSel + 1);
-              }}>+ Gleiche Stelle</button>}
-              {evSel !== null && <button onClick={() => { edit((d) => { d.levels[li].events.splice(evSel, 1); }); setEvSel(null); }}>Ereignis löschen</button>}
-              {evSel !== null && <button onClick={() => onPlay(lv.id, lv.events[evSel].pos)}>▶ Ab diesem Ereignis</button>}
+              {ev && evSel !== null && <>
+                <label title={`Kamera-Position, an der das Ereignis auslöst (0 bis ${levelCamMax(lv)} px)`}>Position <NumberInput value={Math.round(ev.pos)} min={0} max={levelCamMax(lv)}
+                  onCommit={(n, c) => edit((d) => { d.levels[li].events[evSel].pos = n; }, c)} /> px</label>
+                <button disabled={stackNeighbor(lv, evSel, -1) < 0} onClick={() => swap(stackNeighbor(lv, evSel, -1))} title="Mit dem Ereignis davor an derselben Stelle tauschen: löst früher aus">früher</button>
+                <button disabled={stackNeighbor(lv, evSel, 1) < 0} onClick={() => swap(stackNeighbor(lv, evSel, 1))} title="Mit dem Ereignis danach an derselben Stelle tauschen: löst später aus">später</button>
+                <button title="Neues Ereignis an derselben Position, läuft direkt danach ab" onClick={() => {
+                  edit((d) => { const L = d.levels[li]; L.events.splice(evSel + 1, 0, makeEvent(ev.pos, tpl)); });
+                  setEvSel(evSel + 1);
+                }}>+ Gleiche Stelle</button>
+                <button onClick={() => keys.current.del()} title="Gewähltes Ereignis löschen (Entf)">Ereignis löschen</button>
+                <button onClick={() => onPlay(lv.id, ev.pos)} title="Danach folgen die übrigen Level">▶ Ab diesem Ereignis</button>
+                <button onClick={() => setEvSel(null)} title="Nichts mehr gewählt: Die Leiste stellt dann das nächste neue Ereignis ein (Esc)">✕ Auswahl aufheben</button>
+              </>}
             </>
           )}
         </div>
         <p className="hint">
-          {tool === 'events'
-            ? 'Klick setzt ein Ereignis: Es löst aus, wenn diese Linie den Bildschirmrand erreicht. Mehrere an einer Stelle laufen in Marker-Reihenfolge ab. Marker ziehen = verschieben, Rechtsklick = löschen.'
-            : 'Linke Maustaste malt, rechte Maustaste radiert. Mausrad scrollt, Shift+Mausrad quer.'}
+          {tool !== 'events' ? 'Linke Maustaste malt, rechte Maustaste radiert. Mausrad scrollt, Shift+Mausrad quer.'
+            : ev ? EV_HINT[ev.type]
+              : 'Klick setzt ein Ereignis: Es löst aus, wenn diese Linie den Bildschirmrand erreicht. Mehrere an einer Stelle laufen in Marker-Reihenfolge ab. Marker ziehen = verschieben (rastet an vorhandenen Linien ein), Rechtsklick oder Entf = löschen, Esc = Auswahl aufheben.'}
+          {` P spielt ab dem ${lv.orientation === 'h' ? 'linken' : 'unteren'} Rand der Ansicht; blasse Ereignisse sind dann schon vorbei.`}
         </p>
-        <LevelCanvas camAt={camAt} level={lv} li={li} tool={tool} zoom={zoom} showGrid={showGrid} evSel={evSel} setEvSel={pickEvent} tpl={tpl} />
+        <LevelCanvas focus={focus} camAt={camAt} level={lv} li={li} tool={tool} zoom={zoom} showGrid={showGrid} evSel={evSel} setEvSel={setEvSel} tpl={newTpl} />
       </div>
     </div>
   );
 }
 
-/** Übernimmt erst bei Enter/Verlassen: Kürzen schneidet die Karte ab, das darf nicht schon beim Tippen passieren. */
-function LengthInput({ value, onCommit }: { value: number; onCommit: (n: number) => void }) {
-  const [v, setV] = useState(String(value));
-  useEffect(() => { setV(String(value)); }, [value]);
-  const commit = () => {
-    const n = Math.round(Number(v));
-    if (v.trim() && Number.isFinite(n) && n !== value) onCommit(n);
-    setV(String(value)); // leer/ungültig/geklemmt → angezeigten Wert zurücksetzen (bei Änderung überschreibt der Effekt)
-  };
-  return <input type="number" value={v} onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />;
-}
-
 interface CanvasProps {
+  /** Sprungziel aus dem Problem-Panel: dorthin scrollen */
+  focus: { pos: number } | null;
   camAt: React.MutableRefObject<number>;
   level: Level; li: number; tool: Tool; zoom: number; showGrid: boolean;
   evSel: number | null; setEvSel: (i: number | null) => void; tpl: EvTpl;
 }
 
-function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvSel, tpl }: CanvasProps) {
+function LevelCanvas({ focus, camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvSel, tpl }: CanvasProps) {
   const p = useProject();
   const { edit, sel, select } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -191,6 +253,12 @@ function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvS
   }, [zoom]);
   // Vertikal: Start unten
   useEffect(() => { const el = scrollRef.current!; if (!H) el.scrollTop = el.scrollHeight; else el.scrollLeft = 0; }, [lv.id, zoom]);
+  // Sprungziel mittig zeigen (läuft nach dem Zurücksetzen oben)
+  useEffect(() => {
+    if (!focus) return;
+    const el = scrollRef.current!, L = evLine(Math.min(focus.pos, camMax)) * zoom;
+    if (H) el.scrollLeft = L - el.clientWidth / 2; else el.scrollTop = L - el.clientHeight / 2;
+  }, [focus]);
 
   // Welt ↔ Zelle
   const cellAt = (wx: number, wy: number) => H
@@ -209,11 +277,6 @@ function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvS
     const k = lv.events.slice(0, i).filter((e) => e.pos === ev.pos).length;
     return H ? { x: L, y: 6 + k * 12, k } : { x: 248 - k * 12, y: L, k };
   };
-  const evLabel = (ev: LevelEvent) =>
-    ev.type === 'spawn' ? p.formations.find((x) => x.id === ev.formationId)?.name ?? '?'
-      : ev.type === 'speed' ? (ev.speed ? `Tempo ${ev.speed}` : 'Stopp')
-        : ev.type === 'music' ? `♪ ${ev.musicId ? p.songs.find((s) => s.id === ev.musicId)?.name ?? '?' : 'Stille'}`
-          : ev.type === 'waitClear' ? 'Warten' : 'Checkpoint';
 
   const formSprites = useMemo(() => {
     const m = new Map<string, HTMLCanvasElement | undefined>();
@@ -258,7 +321,9 @@ function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvS
     lv.events.forEach((ev, i) => {
       const L = evLine(ev.pos);
       const f = ev.type === 'spawn' ? p.formations.find((x) => x.id === ev.formationId) : undefined;
-      const col = i === evSel ? '#ffcc00' : EV_COLOR[ev.type];
+      const col = EV_COLOR[ev.type];
+      // vor dem „Ab hier“-Startpunkt: im Test schon vorbei → blass
+      ctx.globalAlpha = ev.pos < camAt.current ? 0.35 : 1;
       ctx.strokeStyle = i === evSel ? col : col + 'cc';
       ctx.lineWidth = (i === evSel ? 2 : 1) / zoom;
       ctx.beginPath();
@@ -266,14 +331,23 @@ function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvS
       ctx.stroke();
       ctx.fillStyle = col;
       const { x: mx, y: my, k } = marker(i);
-      ctx.beginPath(); ctx.moveTo(mx, my - 5); ctx.lineTo(mx + 5, my); ctx.lineTo(mx, my + 5); ctx.lineTo(mx - 5, my); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(mx, my - 5); ctx.lineTo(mx + 5, my); ctx.lineTo(mx, my + 5); ctx.lineTo(mx - 5, my); ctx.closePath(); ctx.fill();
+      // Auswahl: weiße Umrandung, die Typfarbe bleibt sichtbar
+      if (i === evSel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 / zoom; ctx.stroke(); }
+      // Beschriftung auf dunklem Grund
+      const text = evLabel(p, ev), tx = H ? L + 7 : 4, ty = H ? my + 4 : L - 3 - k * 9;
       ctx.font = '8px sans-serif';
-      ctx.fillText(evLabel(ev), H ? L + 7 : 4, H ? my + 4 : L - 3 - k * 9);
-      // Pfad-Overlay der gewählten Formation (Bildschirm zum Auslösezeitpunkt)
-      if (i === evSel && f && f.points.length >= 2) {
-        const camX = H ? ev.pos : 0, camTop = H ? 0 : worldH - ev.pos - 192;
-        ctx.strokeStyle = 'rgba(255,204,0,0.6)'; ctx.setLineDash([4 / zoom, 3 / zoom]);
+      ctx.fillStyle = '#000000b0'; ctx.fillRect(tx - 1, ty - 7, ctx.measureText(text).width + 2, 9);
+      ctx.fillStyle = i === evSel ? '#fff' : col;
+      ctx.fillText(text, tx, ty);
+      ctx.globalAlpha = 1;
+      // Gewähltes Ereignis: Bildschirm zum Auslösezeitpunkt, bei Formationen dazu der Pfad
+      const camX = H ? ev.pos : 0, camTop = H ? 0 : worldH - ev.pos - 192;
+      if (i === evSel) {
+        ctx.strokeStyle = 'rgba(255,204,0,0.6)'; ctx.lineWidth = 1 / zoom; ctx.setLineDash([4 / zoom, 3 / zoom]);
         ctx.strokeRect(camX, camTop, 256, 192); ctx.setLineDash([]);
+      }
+      if (i === evSel && f && f.points.length >= 2) {
         // Kamera bewegt sich weiter → Pfad in Weltkoordinaten
         const path = framePositions(f.points, f.speed);
         const mem = formationMembers(f);
@@ -385,7 +459,10 @@ function LevelCanvas({ camAt, level: lv, li, tool, zoom, showGrid, evSel, setEvS
     const d0 = drag.current;
     if (!d0) return;
     if (d0.mode === 'event' && d0.ev !== undefined) {
-      const pos = posFromWorld(wx, wy);
+      // an eine vorhandene Linie einrasten (±4 px), damit Stapeln auch nachträglich gelingt
+      let pos = posFromWorld(wx, wy);
+      const snap = lv.events.find((e, j) => j !== d0.ev && Math.abs(e.pos - pos) <= 4);
+      if (snap) pos = snap.pos;
       edit((d) => { const ev = d.levels[li].events[d0.ev!]; if (ev) ev.pos = pos; }, d0.stroke);
       return;
     }
