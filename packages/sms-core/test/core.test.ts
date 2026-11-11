@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { bakePath, buildRom, compileProject, createDemoProject, validateProject, decodeTile, encodeNameEntry, encodeTile, engineBinary, framePositions, rgbToSms, smsToRgb } from '../src/index';
 import { SMS, BTN, PSG } from '../../sms-emu/src/index';
-import { createTemplateProject, layoutBgTiles, levelCamMax, levelDuration, lintProject, peakEnemies, shrinkLoss, stackNeighbor, periodTable, shotVelocity, spriteUsers, upgradeProject, type EnemyShot, type Level, type LevelEvent, type Metatile } from '../src/index';
+
+// Die Emulator-Tests laufen synchron; ohne Makrotask dazwischen beantwortet der Worker keine RPCs und Vitest meldet nach 60 s „Timeout calling onTaskUpdate“
+afterEach(() => new Promise((r) => setTimeout(r)));
+import { COST, ENGINE_SYMBOLS, budgetLevel, createTemplateProject, frameCost, layoutSprites, type FrameLoad, layoutBgTiles, levelCamMax, levelDuration, lintProject, peakEnemies, shrinkLoss, stackNeighbor, periodTable, shotVelocity, spriteUsers, upgradeProject, type EnemyShot, type Level, type LevelEvent, type Metatile } from '../src/index';
 
 describe('Hardware-Primitive', () => {
   it('kodiert Tiles planar 4bpp und zurück', () => {
@@ -662,6 +665,215 @@ describe('Gegnerschüsse', () => {
     const r = camAfter(sitter('h', 200, 60, { pattern: 'fan3', interval: 8, speed: 0.5 }, 0, 12), 300);
     expect(r.max).toBe(16);
     expect(r.cam).toBeGreaterThan(50);
+  });
+
+  // ---- Taktmessung (SMS.busy/maxBusy): Arbeit je Spielbild, ohne die Wartezeit im halt ----
+  const S = ENGINE_SYMBOLS;
+  const FRAME = 59736;
+  const MAXBUSY_E0 = 72000; // vor E0 (d733060): H 94 192, V 91 125; nach E0: H 67 286, V 65 647
+  const GOLDEN = [[900, 1028066320], [900, 2301853528], [400, 3735968378]]; // [Spielbilder, Hash], gemessen mit Engine-Stand d733060
+  const count = (sms: SMS, base: number, n: number) => [...Array(n)].filter((_, i) => sms.ram[base - 0xc000 + i * 16] !== 0).length;
+  // Spitzenlast der Spielbilder 100..249 (Startschutz und Spawn vorbei, Sitzer noch auf dem Pfad)
+  const peak = (p: ReturnType<typeof createTemplateProject>, b1: boolean, pcCycles?: Uint32Array) => {
+    const sms = new SMS(buildRom(engineBinary(), p, { invincible: true }).rom);
+    let frames = 0; // Spielbilder (halts) ab Bild 100
+    for (let f = 0; f < 250; f++) {
+      if (f === 100) { sms.maxBusy = 0; sms.pcCycles = pcCycles; sms.onHalt = () => { frames++; }; }
+      sms.buttons = b1 ? BTN.b1 : 0;
+      sms.runFrame();
+    }
+    return { max: sms.maxBusy, frames, enemies: count(sms, S.enemies, S.MAXE), shots: count(sms, S.shots, S.MAXS), bullets: count(sms, S.bullets, S.MAXB) };
+  };
+  // n Gegner fast still, abseits der Schussbahn (H: über dem Spieler, V: links von ihm); rapid = Spieler-Pool immer voll
+  const scene = (o: 'h' | 'v', n: number, shot: Partial<EnemyShot> = { pattern: 'none' }, rapid = true, wide = false) => {
+    const p = o === 'h' ? sitter('h', 200, 30, shot, 0, n) : sitter('v', 40, 60, shot, 0, n);
+    if (!n) p.levels[0].events = [];
+    if (rapid) p.player.fireRate = 1;
+    if (wide) p.enemyTypes[0].hitbox = { x: 0, y: 2, w: 248, h: 12 }; // jede Schuss-X überlappt: Paarprüfung läuft immer ganz durch
+    return p;
+  };
+
+  it('Taktmessung: busy zählt die Arbeit eines Spielbilds (Demo: > 0, passt ins Bild)', () => {
+    const p = createDemoProject();
+    const sms = new SMS(buildRom(engineBinary(), p).rom);
+    for (let f = 0; f < 60; f++) sms.runFrame();
+    sms.maxBusy = 0;
+    for (let f = 0; f < 300; f++) { sms.buttons = BTN.b1; sms.runFrame(); }
+    expect(sms.busy).toBeGreaterThan(5000);
+    expect(sms.maxBusy).toBeGreaterThanOrEqual(sms.busy);
+    expect(sms.maxBusy).toBeLessThan(FRAME);
+  });
+
+  it('Taktmessung: Pause-NMI überschreibt busy nicht, Levelaufbau zählt als loadBusy statt maxBusy', () => {
+    // Pause: jedes gemeldete Spielbild hat echte Arbeit (vorher meldete das NMI eine Strecke von ~70 Takten)
+    const sms = new SMS(buildRom(engineBinary(), createDemoProject()).rom);
+    for (let f = 0; f < 60; f++) sms.runFrame();
+    const seen: number[] = [];
+    sms.onHalt = () => { if (!sms.loadBusy) seen.push(sms.busy); };
+    sms.pause(); for (let f = 0; f < 10; f++) sms.runFrame();
+    sms.pause(); for (let f = 0; f < 10; f++) sms.runFrame();
+    expect(seen.length).toBeGreaterThanOrEqual(19);
+    expect(Math.min(...seen)).toBeGreaterThan(1000);
+    // Levelende im Messfenster: Neuaufbau (> 1 Bild) landet in loadBusy, maxBusy misst nur Spielbilder
+    const p = createTemplateProject('h');
+    p.levels[0].speed = 4;
+    const lv = new SMS(buildRom(engineBinary(), p).rom);
+    let loads = 0, maxLoad = 0;
+    lv.onHalt = () => { if (lv.loadBusy) { loads++; maxLoad = Math.max(maxLoad, lv.loadBusy); } };
+    for (let f = 0; f < levelDuration(p.levels[0]).frames + 200; f++) lv.runFrame();
+    expect(loads).toBeGreaterThanOrEqual(2); // Init + Neustart nach Levelende
+    expect(maxLoad).toBeGreaterThan(FRAME);
+    expect(lv.maxBusy).toBeLessThan(FRAME);
+  });
+
+  // 12 Gegner + 6 Spielerschüsse sprengen das Bild weiterhin (59 736), aber E0 spart rund 27 000 Takte; die Grenze sichert das ab
+  // shortcut: passt erst mit weniger Gegnern/Schüssen ins Bild; das Budget-Modell (E1) sperrt solche Kombinationen
+  it('Rechenzeit: 12 Gegner und Dauerfeuer (6 Schüsse) sind deutlich billiger als vor E0', () => {
+    const r = (['h', 'v'] as const).map((o) => ({ o, ...peak(scene(o, 12), true) }));
+    for (const x of r) {
+      expect([x.o, x.enemies, x.shots]).toEqual([x.o, 12, 6]);
+      expect(x.max).toBeLessThan(MAXBUSY_E0);
+    }
+  });
+
+  // Verhalten pro Spielbild (nicht pro Emulator-Bild, damit gesparte Takte nichts verschieben): Hash über Spieler, SAT und alle Objekt-Pools
+  const trace = (p: ReturnType<typeof createDemoProject>, games: number) => {
+    const sms = new SMS(buildRom(engineBinary(), p).rom);
+    const areas = [[S.frame, 1], [S.camPos, 2], [S.rot, 3], [S.bulCount, 1], [S.sfxLeft, 2], [S.player, 16], [S.satY, 0xc0], [S.enemies, 0x300]];
+    const skip = (a: number) => a >= S.shots && a < S.shots + 0x100 && ((a & 15) === S.B_DEF || (a & 15) === S.B_DEF + 1); // seit E0: Zeichenzeiger der Spielerschüsse
+    let g = 0, h = 2166136261;
+    sms.onHalt = () => {
+      if (g >= games) return;
+      for (const [a, n] of areas) for (let i = 0; i < n; i++) if (!skip(a + i)) h = Math.imul(h ^ sms.ram[a - 0xc000 + i], 16777619);
+      g++;
+      sms.buttons = BTN.b1 | [BTN.up, BTN.right, BTN.down, BTN.left][(g >> 5) & 3];
+    };
+    for (let f = 0; f < games * 2 && g < games; f++) sms.runFrame();
+    return [g, h >>> 0];
+  };
+  it('Kollision und Zeichnen verhalten sich wie vor E0 (Hash je Spielbild, Stand d733060)', () => {
+    const demo = (i: number) => { const p = createDemoProject(); p.levels = [p.levels[i]]; return p; };
+    const lane = sitter('h', 200, 96, { pattern: 'aimed', interval: 30, speed: 1.5 }, 0, 12); // 12 Gegner in der Schussbahn, HP 2
+    lane.enemyTypes[0].hp = 2;
+    expect([trace(demo(0), 900), trace(demo(1), 900), trace(lane, 400)]).toEqual(GOLDEN);
+  });
+
+  // ---- Budget-Modell (budget.ts): Residuen gegen Szenen, aus denen die Konstanten NICHT stammen ----
+  // Zählt je Spielbild Gegner (Slot belegt), Schüsse, Zusatz-Sprites (Teile laut layoutSprites über der Grundausstattung) und Salven
+  const loadOf = (p: ReturnType<typeof createDemoProject>, frames: number, from: number, move: (g: number) => number) => {
+    const lay = layoutSprites(p.sprites);
+    const parts = (id: string) => Math.max(0, ...(lay.metasprites.get(id) ?? [[]]).map((f) => f.length));
+    const enParts = p.enemyTypes.map((t) => parts(t.spriteId)), boom = parts('boom'), shotParts = parts(p.player.shotSpriteId);
+    const bulParts = Math.max(1, ...p.enemyTypes.map((t) => (t.shot && t.shot.pattern !== 'none' ? parts(t.shot.spriteId) : 1)));
+    const sms = new SMS(buildRom(engineBinary(), p, { invincible: true }).rom);
+    const pc = new Uint32Array(0x10000);
+    sms.pcCycles = pc;
+    const r = (a: number) => sms.ram[a - 0xc000];
+    const out: { busy: number; l: FrameLoad }[] = [];
+    let g = 0;
+    sms.onHalt = () => {
+      if (sms.loadBusy) return;
+      const volleys = pc[S.efShoot] / 20; // efShoot beginnt mit ld iy,(nn) = 20 Takte → Anzahl Aufrufe
+      pc[S.efShoot] = 0;
+      sms.buttons = BTN.b1 | move(++g);
+      if (g <= from) return;
+      const l: FrameLoad = { enemies: 0, playerShots: 0, enemyShots: 0, extraSprites: Math.max(0, parts(p.player.spriteId) - 2), volleys };
+      for (let i = 0; i < S.MAXE; i++) {
+        const st = r(S.enemies + i * 16);
+        if (st) { l.enemies++; l.extraSprites += Math.max(0, (st === 3 ? boom : enParts[r(S.enemies + i * 16 + S.O_TYPE)]) - 2); }
+      }
+      for (let i = 0; i < S.MAXS; i++) if (r(S.shots + i * 16)) { l.playerShots++; l.extraSprites += Math.max(0, shotParts - 1); }
+      for (let i = 0; i < S.MAXB; i++) if (r(S.bullets + i * 16)) { l.enemyShots++; l.extraSprites += bulParts - 1; }
+      out.push({ busy: sms.busy, l });
+    };
+    for (let f = 0; f < frames; f++) sms.runFrame();
+    return out;
+  };
+  const px = (w: number, h: number, f: (x: number, y: number) => number) => [...Array(w * h)].map((_, i) => f(i % w, Math.floor(i / w)));
+  // Laser-Nachbildung: Spielerschuss 32×8 (4 Hardware-Sprites)
+  const laser = (p: ReturnType<typeof createDemoProject>) => {
+    p.sprites.push({ id: 'laser', name: 'Laser', width: 32, height: 8, frames: [px(32, 8, (x, y) => (y >= 3 && y <= 4 ? 6 : 0))], frameDelay: 8 });
+    Object.assign(p.player, { shotSpriteId: 'laser', shotHitbox: { x: 0, y: 3, w: 32, h: 2 }, fireRate: 4, shotSpeed: 6 });
+    return p;
+  };
+  const roam = (g: number) => [BTN.up, BTN.right, BTN.down, BTN.left][(g >> 5) & 3];
+  const wiggle = (g: number) => [BTN.up, BTN.down][(g >> 4) & 1];
+  // Benchmark (1): Kette aus 4 + 3 kleine Schiffe, Spieler mit Laser (Satellit erst ab E1)
+  const bench1 = () => {
+    const p = laser(createTemplateProject('h'));
+    p.formations = [
+      { id: 'k4', name: 'Kette4', enemyTypeId: 'e-1', speed: 1, mode: 'chain', count: 4, spacing: 18, offsets: [], points: [{ x: 264, y: 40 }, { x: 180, y: 70 }, { x: 120, y: 40 }, { x: -40, y: 70 }] },
+      { id: 'b3', name: 'Block3', enemyTypeId: 'e-1', speed: 0.7, mode: 'block', count: 3, spacing: 0, offsets: [{ x: 0, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 40 }], points: [{ x: 264, y: 110 }, { x: -40, y: 110 }] },
+    ];
+    p.enemyTypes[0].hp = 3;
+    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'k4' }, { pos: 10, type: 'spawn', formationId: 'b3' }];
+    return p;
+  };
+  // Benchmark (2): Ring aus 12 (MAXE; 14–16 erst ab E1) um den Spieler, gezielte Schüsse, Kamera steht
+  const bench2 = () => {
+    const p = createTemplateProject('h');
+    p.player.shotOffset = { x: 12, y: 0 };
+    p.enemyTypes[0].hp = 50;
+    p.enemyTypes[0].shot = { ...p.enemyTypes[0].shot, pattern: 'aimed', interval: 120, speed: 1.5 }; // ~8 Gegnerschüsse
+    const ring = [...Array(24 * 8 + 1)].map((_, i) => ({ x: Math.round(64 + 56 * Math.cos(Math.PI * i / 12)), y: Math.round(88 + 56 * Math.sin(Math.PI * i / 12)) }));
+    p.formations = [{ id: 'ring', name: 'Ring', enemyTypeId: 'e-1', speed: 3, mode: 'chain', count: 12, spacing: 10, offsets: [], points: ring }];
+    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'ring' }];
+    p.levels[0].speed = 0;
+    return p;
+  };
+  // Benchmark (3): 4 schießende Gegner vor dichtem Hintergrund (Demo-Level 1, mit Musik), Laser
+  const bench3 = () => {
+    const p = laser(createDemoProject());
+    p.levels = [p.levels[0]];
+    p.formations.push({ id: 'q4', name: 'Vier', enemyTypeId: 'e-bug', speed: 0.8, mode: 'chain', count: 4, spacing: 24, offsets: [], points: [{ x: 264, y: 50 }, { x: 160, y: 90 }, { x: 200, y: 140 }, { x: -40, y: 100 }] });
+    p.enemyTypes[1].shot = { ...p.enemyTypes[1].shot, interval: 40 };
+    p.levels[0].events = [...Array(4)].map((_, i) => ({ pos: i * 60, type: 'spawn' as const, formationId: 'q4' }));
+    return p;
+  };
+
+  it('Budget: Stufen grün/gelb/rot und Formel', () => {
+    expect([54_000, 54_001, 110_000, 110_001].map(budgetLevel)).toEqual(['green', 'yellow', 'yellow', 'red']);
+    expect(frameCost({ enemies: 0, enemyShots: 0, playerShots: 0, extraSprites: 0, volleys: 0 })).toBe(COST.BASIS);
+    expect(frameCost({ enemies: 2, enemyShots: 3, playerShots: 4, extraSprites: 5, volleys: 1 }))
+      .toBe(COST.BASIS + 2 * COST.EN + 3 * COST.BU + 4 * COST.SH + 8 * COST.PAIR + 5 * COST.XS + COST.VOLLEY);
+  });
+
+  // Konstanten stammen aus einer Regression über Vorlage-Szenen (docs/data-format.md §5); hier: unabhängige Szenen, Ist ≤ Modell in jedem Bild
+  it('Budget-Modell: gemessene Takte ≤ frameCost in jedem Spielbild unabhängiger Szenen; Benchmarks nie rot', () => {
+    const demo1 = () => { const p = createDemoProject(); p.levels = [p.levels[0]]; return p; };
+    const scenes: [string, () => ReturnType<typeof createDemoProject>, number, number, (g: number) => number][] = [
+      ['Demo-Level 1 mit Musik', demo1, 600, 0, roam],
+      ['(1) Kette 4 + 3 Schiffe, Laser', bench1, 330, 30, wiggle],
+      ['(2) Ring 12, gezielt', bench2, 400, 150, () => 0],
+      ['(3) 4 Gegner vor Demo-Hintergrund, Laser', bench3, 450, 30, wiggle],
+    ];
+    const report: string[] = [];
+    for (const [name, mk, frames, from, move] of scenes) {
+      const rows = loadOf(mk(), frames, from, move);
+      const worst = Math.max(...rows.map((x) => x.busy / frameCost(x.l)));
+      const top = rows.reduce((a, x) => (x.busy > a.busy ? x : a));
+      report.push(`${name}: max Ist/Modell ${worst.toFixed(3)}, Spitze ${top.busy} (${budgetLevel(top.busy)}) bei ${JSON.stringify(top.l)}, Modell ${frameCost(top.l)} (${budgetLevel(frameCost(top.l))})`);
+      expect(rows.length).toBeGreaterThan(frames / 2 - from);
+      expect([name, worst <= 1]).toEqual([name, true]);
+      expect([name, budgetLevel(top.busy)]).not.toEqual([name, 'red']);
+    }
+    if (process.env.PROFILE) console.log(report.join('\n'));
+  });
+
+  // nur mit PROFILE=1: Eigenkosten je Routine im schwersten Vorlage-Szenario (12 Gegner, Dauerfeuer, breite Hitbox), Takte pro Bild
+  it.skipIf(!process.env.PROFILE)('Profil: Eigenkosten je Routine', () => {
+    const pc = new Uint32Array(0x10000);
+    const r = peak(scene('h', 12, undefined, true, true), true, pc);
+    const names = ['mainLoop', 'waitVblank', 'uploadSat', 'readJoy', 'setScroll', 'doStreaming', 'drawColumn', 'drawRow', 'updateCamera', 'processEvents', 'updatePlayer', 'fireShot',
+      'updateShots', 'updateEnemies', 'enemyFire', 'efShoot', 'spawnBullet', 'aimDir', 'typePtr', 'animate', 'curFrame', 'updateBullets', 'bulletStep', 'ovl1', 'enemyBox', 'boxHit', 'collide',
+      'playerBox', 'boxScan', 'bulletCollide', 'solidAt', 'bgCollide', 'playerHit', 'checkLevelEnd', 'buildSat', 'drawPool', 'drawEnemy', 'drawMeta', 'soundUpdate', 'musicUpdate', 'sfxUpdate']
+      .filter((n) => n in S).sort((a, b) => S[a] - S[b]);
+    const self: Record<string, number> = {};
+    for (let a = 0x38; a < 0x4000; a++) if (pc[a]) {
+      const n = a < S.init ? 'IRQ/NMI' : names.filter((x) => S[x] <= a).pop() ?? 'init';
+      self[n] = (self[n] ?? 0) + pc[a] / r.frames;
+    }
+    console.log('maxBusy', r.max, 'Eigenkosten je Routine (Takte/Bild):', Object.fromEntries(Object.entries(self).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round(v)])));
   });
 
   it('Compiler: Typ-Byte 8-9 → Schussdefinition (0 = schießt nicht); alte Projekte ohne Schuss bleiben bytegleich', () => {

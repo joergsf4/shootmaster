@@ -6,7 +6,8 @@ export * from './rom';
 export * from './sound';
 export { createDemoProject, createTemplateProject, noShot, upgradeProject } from './demo';
 export * from './validate';
-export { ENGINE_BASE64 } from './generated/engine';
+export * from './budget';
+export { ENGINE_BASE64, ENGINE_SYMBOLS } from './generated/engine';
 
 import { ENGINE_BASE64 } from './generated/engine';
 export function engineBinary(): Uint8Array {

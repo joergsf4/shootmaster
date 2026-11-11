@@ -42,6 +42,9 @@ fs.writeFileSync(path.join(out, 'engine.lst'), listing.join('\n'));
 // Für den Editor als Base64-Modul
 const editorDir = path.join(dir, '..', 'packages', 'sms-core', 'src', 'generated');
 fs.mkdirSync(editorDir, { recursive: true });
+// Labels und equ-Konstanten (RAM-Adressen, Offsets) für Tests und Messung
+const symbols = Object.fromEntries([...asm.scopes[0].symbols].map(([k, s]) => [k, s.value]).sort(([a], [b]) => a.localeCompare(b)));
 fs.writeFileSync(path.join(editorDir, 'engine.ts'),
-  `// automatisch erzeugt von engine/build.mjs – nicht bearbeiten\nexport const ENGINE_BASE64 = '${Buffer.from(bin.subarray(0, end)).toString('base64')}';\n`);
+  `// automatisch erzeugt von engine/build.mjs – nicht bearbeiten\nexport const ENGINE_BASE64 = '${Buffer.from(bin.subarray(0, end)).toString('base64')}';\n` +
+  `export const ENGINE_SYMBOLS: Readonly<Record<string, number>> = ${JSON.stringify(symbols)};\n`);
 console.log(`Engine: ${end} Byte`);

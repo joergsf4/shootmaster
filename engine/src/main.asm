@@ -170,6 +170,8 @@ curSpeed    equ $C039      ; aktuelles Scrolltempo 4.4
 curSong     equ $C03A      ; aktueller Song ($FF = Stille)
 ckSpeed     equ $C03B      ; Checkpoint: Tempo, Song, Ereigniszeiger (0 = keiner), Kamera
 ckSong      equ $C03C
+shotCount   equ $C03D      ; aktive Spielerschüsse (0: Schleifen über den Pool entfallen)
+coKill      equ tmpType    ; collide: höchster explodierter Box-Cache-Eintrag + 1 dieses Bilds (0 = keiner)
 ckEv        equ $C050
 ckCam       equ $C052
 bulCount    equ $C054      ; aktive Gegnerschüsse (0: Schleifen über den Pool entfallen)
@@ -188,6 +190,9 @@ chAtt       equ $C063
 player      equ $C080
 satY        equ $C100
 satXT       equ $C140
+boxCache    equ $C1C0      ; MAXE × (x, w, y, h): Hitboxen der kollidierbaren Gegner (Zustand 2, auf dem Bildschirm) in Slot-Reihenfolge, von updateEnemies je Bild gefüllt; x = w = 0: in diesem Bild schon getroffen
+boxSlot     equ $C1F0      ; MAXE × Low-Byte des Gegners (Slot × 16) je Eintrag
+boxCount    equ $C1FC      ; Anzahl Einträge
 enemies     equ $C200
 shots       equ $C300
 bullets     equ $C400      ; MAXB × 16 Byte = genau eine 256-Byte-Seite (Schleifen laufen über das Low-Byte)
@@ -402,6 +407,7 @@ clrNt:
     ld (camFrac),a
     ld (waitClr),a
     ld (bulCount),a
+    ld (shotCount),a
     ld (streamPend),a
     ld (cooldown),a
     ld (endTimer),a
@@ -1226,12 +1232,25 @@ fsFound:
     ld (ix+O_STATE),2
     ld (ix+O_ATICK),0
     ld (ix+O_AFRAME),0
+    ; Zeichenzeiger wie bei Gegnerschüssen: B_DEF + S_ANIM → P_SANIM
+    ; shortcut: zeigt mitten in die Spielerdefinition; E1 ersetzt das durch die Waffenstufe
+    push iy
+    pop hl
+    ld de,P_SANIM-S_ANIM
+    add hl,de
+    ld (ix+B_DEF),l
+    ld (ix+B_DEF+1),h
+    ld hl,shotCount
+    inc (hl)
     ld a,(iy+P_RATE)
     ld (cooldown),a
     ld a,(G_SND_SHOT)
     jp playSfx
 
 updateShots:
+    ld a,(shotCount)
+    or a
+    ret z
     ld iy,(G_PLAYER)
     ld ix,shots
     ld b,MAXS
@@ -1260,6 +1279,8 @@ usAnim:
     jr usNext
 usFree:
     ld (ix+O_STATE),0
+    ld hl,shotCount
+    dec (hl)
 usNext:
     ld de,OBJ
     add ix,de
@@ -1271,6 +1292,8 @@ usNext:
 ; Gegner
 ; ---------------------------------------------------------------------
 updateEnemies:
+    xor a
+    ld (boxCount),a
     ld ix,enemies
     ld b,MAXE
 ueLoop:
@@ -1340,6 +1363,9 @@ ueAnim:
     inc hl
     or (hl)
     call nz,enemyFire       ; HL = Typ + T_SHOT + 1
+    pop hl
+    push hl
+    call enemyBox
     pop hl
     ld de,T_ANIM
     add hl,de
@@ -1709,35 +1735,86 @@ ovlNeg:
     cp c
     ret
 
-; IX = Gegner → hbX..hbH (absolute Hitbox), Carry = nicht kollidierbar
+; IX = aktiver Gegner, HL = Typ → hängt seine Hitbox an den Box-Cache an (nur auf dem Bildschirm, wie früher in collide geprüft)
 enemyBox:
-    ld a,(ix+O_STATE)
-    cp 2
-    jr nz,ebNo
     ld a,(ix+O_X+1)
     or (ix+O_Y+1)
-    jr nz,ebNo
-    ld a,(ix+O_TYPE)
-    call typePtr
+    ret nz
+    ex de,hl                ; DE = Typ
+    ld a,(boxCount)
+    ld c,a
+    add a,a
+    add a,a
+    add a,boxCache&255
+    ld l,a
+    ld h,boxCache/256
+    inc de                  ; T_HBX
+    ld a,(de)
+    add a,(ix+O_X)
+    ld (hl),a               ; x
     inc hl
-    ld a,(ix+O_X)
-    add a,(hl)
-    ld (hbX),a
+    inc de
+    inc de                  ; T_HBW
+    ld a,(de)
+    ld (hl),a               ; w
     inc hl
-    ld a,(ix+O_Y)
-    add a,(hl)
-    ld (hbY),a
+    dec de                  ; T_HBY
+    ld a,(de)
+    add a,(ix+O_Y)
+    ld (hl),a               ; y
     inc hl
-    ld a,(hl)
-    ld (hbW),a
-    inc hl
-    ld a,(hl)
-    ld (hbH),a
-    or a
+    inc de
+    inc de                  ; T_HBH
+    ld a,(de)
+    ld (hl),a               ; h
+    ld a,c
+    add a,boxSlot&255
+    ld l,a
+    ld h,boxSlot/256
+    push ix
+    pop de
+    ld (hl),e               ; Low-Byte von IX = Slot × 16
+    ld hl,boxCount
+    inc (hl)
     ret
-ebNo:
-    scf
-    ret
+
+; C = x, D = Breite, E = Höhe, (shY) = y einer Box; HL = Box-Cache-Eintrag, B = Anzahl Einträge (≥ 1).
+; Sucht den ersten überlappenden Eintrag (Prüfung wie ovl1, X zuerst: meist schon dort vorbei)
+; → Carry: Treffer, HL = Eintrag + 3, B = verbleibende Einträge inkl. Treffer
+boxScan:
+    ld a,c
+    sub (hl)
+    inc hl
+    jr c,bxXNeg
+    cp (hl)
+    jr c,bxY
+bxMissX:
+    inc hl
+    inc hl
+    inc hl
+    djnz boxScan
+    ret                     ; kein Carry
+bxXNeg:
+    neg
+    cp d
+    jr nc,bxMissX
+bxY:
+    inc hl
+    ld a,(shY)
+    sub (hl)
+    inc hl
+    jr c,bxYNeg
+    cp (hl)
+    ret c
+    jr bxMissY
+bxYNeg:
+    neg
+    cp e
+    ret c
+bxMissY:
+    inc hl
+    djnz boxScan
+    ret                     ; kein Carry
 
 ; Vergleicht hbX.. mit shX.. → Carry bei Treffer
 boxHit:
@@ -1759,70 +1836,112 @@ boxHit:
     ld a,(shY)
     jp ovl1
 
+; Spielerschüsse gegen Gegner (außen Schüsse, innen Box-Cache), danach Körperkontakt. Ergebnis wie früher (außen Gegner, innen Schüsse):
+; je Gegner höchstens ein Treffer pro Bild, ein getroffener Gegner berührt den Spieler in diesem Bild nicht, alle Schüsse prüfen jedes Bild
 collide:
     ld iy,(G_PLAYER)
-    ld ix,enemies
-    ld b,MAXE
-coLoop:
-    push bc
-    call enemyBox
-    jp c,coNext
-    ; gegen Spielerschüsse
+    xor a
+    ld (coKill),a
+    ld a,(boxCount)
+    or a
+    ret z
+    ld a,(shotCount)
+    or a
+    jr z,coBody
     ld hl,shots
     ld b,MAXS
 coShot:
     ld a,(hl)
     or a
     jr z,coShotNext
+    push bc
     push hl
     inc hl
     inc hl
-    ld a,(hl)
+    ld a,(hl)               ; O_X
     add a,(iy+P_SHBX)
-    ld (shX),a
+    ld c,a
     inc hl
     inc hl
-    ld a,(hl)
+    ld a,(hl)               ; O_Y
     add a,(iy+P_SHBY)
     ld (shY),a
-    ld a,(iy+P_SHBW)
-    ld (shW),a
-    ld a,(iy+P_SHBH)
-    ld (shH),a
-    push bc
-    call boxHit
-    pop bc
+    ld d,(iy+P_SHBW)
+    ld e,(iy+P_SHBH)
+    ld hl,boxCache
+    ld a,(boxCount)
+    ld b,a
+    call boxScan
+    jr nc,coShotDone
+    dec hl                  ; Treffer: Eintrag sperren (HL = Eintrag + 3)
+    dec hl
+    xor a
+    ld (hl),a               ; w
+    dec hl
+    ld (hl),a               ; x
+    ld a,(boxCount)
+    sub b
+    ld c,a                  ; C = Eintrag
+    add a,boxSlot&255
+    ld l,a
+    ld h,boxSlot/256
+    ld l,(hl)
+    ld h,enemies/256
+    push hl
+    pop ix
     pop hl
-    jr nc,coShotNext
     ld (hl),0               ; Schuss weg
+    push hl
+    ld hl,shotCount
+    dec (hl)
     ld (ix+O_TIMER),6       ; Aufblitzen
     dec (ix+O_HP)
-    jr nz,coNext
+    jr nz,coShotDone
     ld (ix+O_STATE),3       ; Explosion
     ld (ix+O_ATICK),0
     ld (ix+O_AFRAME),0
     ld a,(G_SND_EXPL)
     call playSfx
-    jr coNext
+    ld a,c
+    inc a
+    ld hl,coKill
+    cp (hl)
+    jr c,coShotDone
+    ld (hl),a
+coShotDone:
+    pop hl
+    pop bc
 coShotNext:
     ld de,OBJ
     add hl,de
     djnz coShot
-    ; gegen Spieler
+coBody:                     ; gegen Spieler: erster berührender Gegner
     ld a,(player+O_TIMER)
     or a
-    jr nz,coNext
+    ret nz
     call playerBox
-    call boxHit
-    jr nc,coNext
+    ld a,(shX)
+    ld c,a
+    ld a,(shW)
+    ld d,a
+    ld a,(shH)
+    ld e,a
+    ld hl,boxCache
+    ld a,(boxCount)
+    ld b,a
+    call boxScan
+    ret nc
+    ld a,(boxCount)
+    inc a
+    sub b                   ; Eintrag + 1 (Einträge liegen in Slot-Reihenfolge)
+    ld hl,coKill
+    cp (hl)
+    push af                 ; Carry: ein späterer Gegner ist in diesem Bild explodiert
     call playerHit
-coNext:
-    ld de,OBJ
-    add ix,de
-    pop bc
-    dec b
-    jp nz,coLoop
-    ret
+    pop af
+    ret nc
+    ld a,(G_SND_EXPL)       ; früher kam dessen Explosions-Sound nach dem Treffer-Sound: so bleibt es
+    jp playSfx
 
 ; IY = Spielerdefinition → shX..shH (absolute Spieler-Hitbox)
 playerBox:
@@ -2016,6 +2135,9 @@ bgCollide:
 bcHit:
     call playerHit
 bcShots:
+    ld a,(shotCount)
+    or a
+    ret z
     ld ix,shots             ; Schüsse verschwinden in tödlichen Pinseln (Mitte der Hitbox)
     ld a,MAXS
 bcLoop:
@@ -2036,6 +2158,8 @@ bcLoop:
     call solidAt
     jr nc,bcNext
     ld (ix+O_STATE),0
+    ld hl,shotCount
+    dec (hl)
 bcNext:
     ld de,OBJ
     add ix,de
@@ -2107,22 +2231,13 @@ buildSat:
     call curFrame
     call drawMeta
 bsShots:
-    ld ix,shots
-    ld b,MAXS
-bsShotLoop:
-    push bc
-    ld a,(ix+O_STATE)
+    ld a,(shotCount)
     or a
-    jr z,bsShotNext
-    ld l,(iy+P_SANIM)
-    ld h,(iy+P_SANIM+1)
-    call curFrame
-    call drawMeta
-bsShotNext:
-    ld de,OBJ
-    add ix,de
-    pop bc
-    djnz bsShotLoop
+    jr z,bsBul
+    ld hl,shots
+    ld b,MAXS
+    call drawPool
+bsBul:
     ; Gegnerschüsse vor den Gegnern (unsichtbare Schüsse wären unfair), Start rotiert: zu viele in einer Zeile flackern
     ld a,(bulCount)
     or a
@@ -2135,31 +2250,7 @@ bsShotNext:
     ld l,a                  ; (frame mod 16) × 16
     ld h,bullets/256
     ld b,MAXB
-bsBulLoop:
-    ld a,(hl)
-    or a
-    jr z,bsBulNext
-    push bc
-    push hl
-    push hl
-    pop ix
-    ld l,(ix+B_DEF)
-    ld h,(ix+B_DEF+1)
-    inc hl
-    inc hl                  ; S_ANIM
-    ld a,(hl)
-    inc hl
-    ld h,(hl)
-    ld l,a
-    call curFrame
-    call drawMeta
-    pop hl
-    pop bc
-bsBulNext:
-    ld a,l
-    add a,OBJ
-    ld l,a
-    djnz bsBulLoop
+    call drawPool
 bsBulDone:
     ; Gegner mit rotierender Startposition (Flackern statt Verschlucken)
     ld a,(rot)
@@ -2200,6 +2291,34 @@ bsNoWrap:
     ld l,a
     ld h,satY/256
     ld (hl),$D0
+    ret
+
+; Schuss-Pool zeichnen: HL = erster Schuss, B = Anzahl (Low-Byte läuft innerhalb der Seite um), Animation über B_DEF → S_ANIM
+drawPool:
+    ld a,(hl)
+    or a
+    jr z,dpNext
+    push bc
+    push hl
+    push hl
+    pop ix
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    inc hl
+    inc hl                  ; S_ANIM
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    call curFrame
+    call drawMeta
+    pop hl
+    pop bc
+dpNext:
+    ld a,l
+    add a,OBJ
+    ld l,a
+    djnz drawPool
     ret
 
 drawEnemy:

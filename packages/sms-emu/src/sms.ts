@@ -21,6 +21,20 @@ export class SMS implements Hal {
   buttons = 0;
   private pauseRequest = false;
   frameCount = 0;
+  /** Takte des letzten Spielbilds: Arbeit vom VBlank-IRQ bis zum nächsten halt (ohne Wartezeit im halt); > 59 736 = Bild verloren.
+   *  Strecken ohne VBlank-IRQ (Pause-NMI weckt nur kurz) zählen zum folgenden Spielbild. */
+  busy = 0;
+  /** Maximum von busy seit Reset (nur Spielbilder, ohne Ladestrecken); zum Zurücksetzen 0 zuweisen */
+  maxBusy = 0;
+  /** Takte der letzten Strecke, wenn sie bei abgeschaltetem Display lief (Init, Levelaufbau), sonst 0; busy/maxBusy bleiben dann unverändert */
+  loadBusy = 0;
+  /** optional: Takte je PC (64 K Einträge) für Profile */
+  pcCycles?: Uint32Array;
+  /** optional: am Ende jedes Spielbilds bzw. jeder Ladestrecke (RAM in sich stimmig) */
+  onHalt?: () => void;
+  private work = 0;
+  private woke = false; // VBlank-IRQ in dieser Strecke angenommen
+  private load = false; // Display war in dieser Strecke aus
 
   constructor(rom: Uint8Array) {
     this.rom = rom;
@@ -65,8 +79,10 @@ export class SMS implements Hal {
     p &= 0xff;
     if (p >= 0x40 && p < 0x80) this.psg.write(v);
     else if (p >= 0x80 && p < 0xc0) {
-      if (p & 1) this.vdp.writeCtrl(v);
-      else this.vdp.writeData(v);
+      if (p & 1) {
+        this.vdp.writeCtrl(v);
+        if (!(this.vdp.regs[1] & 0x40)) this.load = true; // Display aus: Ladestrecke
+      } else this.vdp.writeData(v);
     }
   }
 
@@ -85,14 +101,31 @@ export class SMS implements Hal {
       this.cpu.nonMaskableInterrupt();
       this.cpu.regs.iff2 = iff1;
     }
-    const vdp = this.vdp;
+    const vdp = this.vdp, regs = this.cpu.regs;
     vdp.startFrame();
     for (let line = 0; line < LINES; line++) {
       this.line = line;
       const end = this.tStateCount + CYCLES_PER_LINE;
       while (this.tStateCount < end) {
-        if (vdp.irq) this.cpu.maskableInterrupt();
+        const t0 = this.tStateCount;
+        if (vdp.irq && regs.iff1) { this.cpu.maskableInterrupt(); this.woke = true; }
+        if (regs.halted) { this.cpu.step(); continue; } // wartet im halt: zählt nicht
+        const pc = regs.pc;
         this.cpu.step();
+        const t = this.tStateCount - t0;
+        this.work += t;
+        if (this.pcCycles) this.pcCycles[pc] += t;
+        if (regs.halted && (this.woke || this.load)) { // gerade ins halt gegangen: Spielbild bzw. Ladestrecke fertig
+          if (this.load) this.loadBusy = this.work;
+          else {
+            this.loadBusy = 0;
+            this.busy = this.work;
+            if (this.work > this.maxBusy) this.maxBusy = this.work;
+          }
+          this.work = 0;
+          this.woke = this.load = false;
+          this.onHalt?.();
+        }
       }
       if (line < 192) vdp.renderLine(line);
       if (line === 192) vdp.status |= 0x80;

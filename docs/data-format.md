@@ -137,12 +137,45 @@ Schrittbyte: `0` halten · `1` aus · `n ≥ 2` Note `n-2` (Ton: Index in Period
 ## 4. Engine-Grenzen (v1)
 - 12 Gegner, 6 Spielerschüsse, 16 Gegnerschüsse (RAM `$C400–$C4FF`, ist der Pool voll, entfällt der Schuss), 64 Hardware-Sprites
 - Wenn mehr als 8 Sprites in einer Bildzeile liegen, rotiert die Reihenfolge jeden Frame, sodass es flackert statt dass Sprites verschwinden. Gegnerschüsse stehen vor den Gegnern in der Sprite-Tabelle und rotieren unter sich.
-- Rechenzeit: 12 Gegner ohne Schüsse passen in ein Bild. Ein aktiver Gegnerschuss kostet rund 1 500 Takte (Bewegung, Kollision, Zeichnen) von 59 736 je Bild; viele Gegner plus viele Schüsse verlangsamen das Spiel.
+- Rechenzeit: 59 736 Takte je Bild, siehe Abschnitt 5. Viele Gegner plus viele Schüsse verlangsamen das Spiel.
 - Gegnerschüsse fliegen durch tödliche Pinsel.
 - Scrolltempo < 8 px/Frame (eine neue Tile-Spalte bzw. -Zeile pro Frame)
 - VRAM: BG-Tiles 0–255, Sprite-Tiles 256–447, Name Table `$3800`, SAT `$3F00`
 
+## 5. Rechenzeit (gemessen, E0)
+Messgröße: `SMS.busy` = Takte eines Spielbilds vom VBlank-IRQ bis zum nächsten `halt` (Wartezeit im `halt` zählt nicht). Strecken bei abgeschaltetem Display (Init, Levelaufbau, Neustart) landen in `SMS.loadBusy` statt in `busy`/`maxBusy`; eine Strecke ohne VBlank-IRQ (Pause-NMI) zählt zum folgenden Spielbild.
+
+Modell (Code: `packages/sms-core/src/budget.ts`, `frameCost`):
+```
+T = BASIS + E·EN + S·SH + B·BU + S·E·PAIR + X·XS + V·VOLLEY
+```
+E Gegner (belegte Slots, auch wartend/explodierend), S Spielerschüsse, B Gegnerschüsse, X Hardware-Sprites (8×16) über der Grundausstattung (Spieler 2, Gegner 2, Schuss 1; Teile laut `layoutSprites`), V Gegner, die im selben Bild feuern.
+
+| Konstante | Takte | Regression | Bedeutung |
+|---|---|---|---|
+| BASIS | 27 000 | 14 940 + max. Residuum 10 820 | Scrollen/Streaming-Spitze, SAT, Spieler, Hintergrund-Kollision; Rest als Reserve für Musik (Vorlage ohne Musik) |
+| EN | 2 600 | 2 568 | je Gegner (Pfad, Animation, Box-Cache, Körperkontakt, Zeichnen) |
+| SH | 2 100 | 1 891 | je Spielerschuss (Bewegung, Pinsel-Kollision, Zeichnen) |
+| BU | 2 200 | 1 652 | je Gegnerschuss (Bewegung, Kollision mit dem Spieler, Zeichnen) |
+| PAIR | 128 | 54 (Mittel) | je Paar Spielerschuss × Gegner; 128 = volle Prüfung bei X-Überlappung (Worst Case) |
+| XS | 400 | 354 | je zusätzlichem Hardware-Sprite (`drawMeta`, SAT) |
+| VOLLEY | 4 000 | gerade 2 102, gezielt 1 755, Fächer 3 950 | je feuerndem Gegner (Zielen, bis zu 3 × Poolsuche, auch bei vollem Pool) |
+
+Herleitung: Kleinste-Quadrate-Regression über 4 549 Spielbilder aus 40 Vorlage-Szenen (H und V; 0–12 Gegner; mit/ohne Dauerfeuer; breite Hitbox; Gegnerschüsse gerade/gezielt/Fächer bei 4 und 12 Gegnern; 32×16-Gegner; 32×8-Schuss; Gegner in der Schussbahn), E/S/B/X/V je Bild aus dem RAM gezählt, V über `pcCycles` am Einsprung von `efShoot`. Steigungen aufgerundet, BASIS = Achsenabschnitt + größtes Residuum, aufgerundet. Auf den Trainingsdaten gilt damit Ist/Modell ≤ 0,87.
+
+Prüfung gegen unabhängige Szenen (Test „Budget-Modell“, jedes Spielbild Ist ≤ Modell, ohne Toleranz): Demo-Level 1 mit Musik 0,935; (1) Kette 4 + 3 Schiffe mit Laser 0,855; (2) Ring aus 12 mit gezielten Schüssen 0,855; (3) 4 schießende Gegner vor Demo-Hintergrund mit Laser 0,919. Die komplette Demo (4 368 Spielbilder, einmalig gemessen) liegt bei 0,969.
+
+Stufen (`budgetLevel`): **grün** T ≤ 54 000 (passt mit Reserve in ein Bild), **gelb** T ≤ 110 000 (verlangsamt, höchstens halbes Tempo), **rot** darüber (Drittel-Tempo droht). Gemessene Benchmark-Nachbildungen (Spitze/Modell): (1) 56 600 / 70 376 gelb, (2) 77 197 / 94 344 gelb, (3) 67 975 / 74 060 gelb, Demo-Level 1 44 154 / 50 960 grün.
+
+shortcut: VOLLEY nimmt für alle Muster den Fächer-Wert und E1 muss V als „alle schießenden Gegner feuern gleichzeitig“ abschätzen; Kosten je Muster und Feuer-Versatz erst, wenn das zu oft fälschlich gelb/rot meldet.
+shortcut: Satelliten, Kapseln, Ladeschuss fehlen im Modell; Terme und Messung kommen mit E1.
+
+Vorher/nachher (12 Gegner + 6 Spielerschüsse, normale Hitbox): vor E0 H 94 192 / V 91 125, nach E0 H 67 286 / V 65 647 Takte. Das Bild bleibt damit noch zu voll (> 59 736); E1 sperrt solche Kombinationen über das Budget.
+
+Engine-Interna seit E0 (Datenformat unverändert): Box-Cache der kollidierbaren Gegner `$C1C0` (12 × x, w, y, h), Slot-Liste `$C1F0`, Anzahl `$C1FC`; `shotCount` `$C03D`; Spielerschüsse tragen in Byte 6–7 (`B_DEF`) einen Zeichenzeiger, damit `drawPool` beide Schuss-Pools zeichnet. Adressen für Tests: `ENGINE_SYMBOLS` aus `generated/engine.ts`.
+
 ## Changelog
+- v3 (ohne Formatänderung): E0 – Taktmessung, Box-Cache, `shotCount`, `drawPool`, Budget-Modell `budget.ts`; Verhalten je Spielbild unverändert (Hash-Test)
 - v3 (ohne Versionswechsel, Typ-Byte 8–9 waren reservierte Nullen = schießt nicht): Gegnerschüsse (Schussdefinition je Gegnertyp)
 - v3 (ohne Versionswechsel, ältere Daten nutzen nur Typ 1): Ereignistypen 2–5 (Tempo, Musik, Warten, Checkpoint)
 - v3 (ohne Versionswechsel, vorher reservierte Null-Byte): Startkamera (Level `28`) und Unverwundbar (Global `2E`) für Test-ROMs
