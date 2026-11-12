@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDemoProject, createTemplateProject } from '@sms/core';
+import { createDemoProject, createTemplateProject, weaponPreset } from '@sms/core';
 import { isTextEntry } from '../src/keys';
 import { parseNum } from '../src/components/NumberInput';
 
@@ -66,6 +66,8 @@ describe('Editor-Store: kein stiller Datenverlust', () => {
     useStore.getState().goto({ tab: 'objects' });
     expect(useStore.getState().tab).toBe('objects');
     expect(useStore.getState().sel.sprite).toBe('spr-x');
+    useStore.getState().goto({ tab: 'upgrades', id: 'w-x' }); // Waffen-Fehler, „→ Waffen-Tab“
+    expect([useStore.getState().tab, useStore.getState().sel.weapon]).toEqual(['upgrades', 'w-x']);
   });
 
   it('Sprung zu einem Level-Ereignis öffnet das Ereignis-Werkzeug und merkt sich die Position', async () => {
@@ -104,6 +106,24 @@ describe('Zahlenfelder: ein Undo-Schritt je Eingabe', () => {
     expect(s().project.enemyTypes[0].hp).toBe(hp0 + 3);
     s().undo();
     expect(s().project.enemyTypes[0].hp).toBe(hp0);
+  });
+});
+
+describe('Waffen: Löschen mit Undo', () => {
+  it('Stufe und Waffe löschen sind je ein Undo-Schritt; Sprung zur Stufe wählt sie', async () => {
+    const { useStore } = await freshStore({});
+    const s = useStore.getState;
+    s().edit((d) => { d.weapons.push(weaponPreset('Fächer', 'w-f', 'shot')); });
+    s().edit((d) => { d.weapons[1].levels.splice(1, 1); });
+    expect(s().project.weapons[1].levels).toHaveLength(2);
+    s().edit((d) => { d.weapons.splice(1, 1); });
+    expect(s().project.weapons).toHaveLength(1);
+    s().undo();
+    expect(s().project.weapons[1].levels).toHaveLength(2);
+    s().undo();
+    expect(s().project.weapons[1].levels).toHaveLength(3);
+    s().goto({ tab: 'upgrades', id: 'w-f', stage: 2 });
+    expect(s().sel).toMatchObject({ weapon: 'w-f', stage: 2 });
   });
 });
 

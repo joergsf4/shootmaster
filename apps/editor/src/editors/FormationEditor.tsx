@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { formationMembers, formationUsers, framePositions, sampleSpline, type Formation, type Point } from '@sms/core';
+import { formationMembers, formationUsers, framePositions, MAX_ENEMIES, sampleSpline, type Formation, type Point } from '@sms/core';
 import { uid, useStore, useProject } from '../store';
 import { spriteCanvases } from '../gfx';
 import { secs, SHOT_LABEL } from './ObjectsEditor';
@@ -168,7 +168,7 @@ export function FormationEditor() {
               <option value="block">Block (starre Formation)</option>
             </select>
           </label>
-          <label>Anzahl <input type="range" min={1} max={12} value={f.count} onChange={(e) => up((d) => { d.count = +e.target.value; d.spacing = Math.min(d.spacing, maxSpacing(d.count)); }, 'count')} /> {f.count}</label>
+          <label>Anzahl <input type="range" min={1} max={MAX_ENEMIES} value={f.count} onChange={(e) => up((d) => { d.count = +e.target.value; d.spacing = Math.min(d.spacing, maxSpacing(d.count)); }, 'count')} /> {f.count}</label>
           {f.mode === 'chain'
             ? <label>Abstand <input type="range" min={1} max={maxSpacing(f.count)} value={f.spacing} onChange={(e) => up((d) => { d.spacing = +e.target.value; }, 'spacing')} /> {f.spacing} Frames</label>
             : <label>Form <select value="" onChange={(e) => { const b = BLOCKS[e.target.value]; if (b) up((d) => { d.offsets = b; d.count = b.length; }); }}>

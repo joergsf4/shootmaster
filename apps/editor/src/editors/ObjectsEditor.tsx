@@ -1,11 +1,12 @@
 import { Fragment, useState } from 'react';
 import { enemyTypeUsers, noShot, SHOT_PATTERNS, type EnemyShot, type EnemyType, type Hitbox, type ShotPattern } from '@sms/core';
+import { WeaponSelect } from './UpgradesEditor';
 import { uid, useStore, useProject } from '../store';
 import { SpriteThumb } from './SpriteEditor';
 import { UsedBy } from '../components/Problems';
 import { NumberInput } from '../components/NumberInput';
 
-function SpriteSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function SpriteSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const p = useProject();
   return (
     <span className="sprite-select">
@@ -20,7 +21,7 @@ function SpriteSelect({ value, onChange }: { value: string; onChange: (v: string
 const HITBOX: [keyof Hitbox, string, string][] = [['x', 'x', 'Abstand vom linken Sprite-Rand (px)'], ['y', 'y', 'Abstand vom oberen Sprite-Rand (px)'], ['w', 'b', 'Breite (px)'], ['h', 'h', 'Höhe (px)']];
 export const HITBOX_TITLE = 'Trefferzone im Sprite: x y = Abstand von links/oben, b h = Breite/Höhe (px)';
 
-function HitboxInput({ value, onChange }: { value: Hitbox; onChange: (h: Hitbox, coalesce?: string) => void }) {
+export function HitboxInput({ value, onChange }: { value: Hitbox; onChange: (h: Hitbox, coalesce?: string) => void }) {
   return (
     <span className="hitbox">
       {HITBOX.map(([k, label, title]) => (
@@ -32,7 +33,7 @@ function HitboxInput({ value, onChange }: { value: Hitbox; onChange: (h: Hitbox,
 
 export const SHOT_LABEL: Record<ShotPattern, string> = { none: 'schießt nicht', straight: 'gerade (nach links, im Hochkant-Level nach unten)', aimed: 'gezielt (auf den Spieler)', fan3: 'Fächer (3, gezielt)' };
 /** Frames als Sekunden bei 60 Hz, z. B. „≈ 1,5 s“ */
-export const secs = (frames: number) => `≈ ${(frames / 60).toFixed(1).replace('.', ',')} s`;
+export const secs = (frames: number) => `≈ ${(frames / 60).toFixed(frames < 6 ? 2 : 1).replace('.', ',')} s`;
 
 function ShotInput({ t, i }: { t: EnemyType; i: number }) {
   const { edit } = useStore();
@@ -54,7 +55,7 @@ function ShotInput({ t, i }: { t: EnemyType; i: number }) {
 
 export function ObjectsEditor() {
   const p = useProject();
-  const { edit, sel, select } = useStore();
+  const { edit, sel, select, goto } = useStore();
   const pl = p.player;
   /** Gegnertyp, dessen Löschen gesperrt ist; die Verwender werden bei jedem Rendern neu ermittelt */
   const [blocked, setBlocked] = useState<string | null>(null);
@@ -70,18 +71,11 @@ export function ObjectsEditor() {
           <label>Leben <NumberInput min={1} max={9} value={pl.lives} onCommit={(n, c) => edit((d) => { d.player.lives = n; }, c)} /></label>
           <label title={HITBOX_TITLE}>Hitbox <HitboxInput value={pl.hitbox} onChange={(h, c) => edit((d) => { d.player.hitbox = h; }, c)} /></label>
         </div>
-        <h3>Schuss</h3>
+        <h3>Waffe</h3>
         <div className="form">
-          <label>Sprite <SpriteSelect value={pl.shotSpriteId} onChange={(v) => edit((d) => { d.player.shotSpriteId = v; })} /></label>
-          <label>Tempo (px/Frame) <NumberInput min={1} max={12} value={pl.shotSpeed} onCommit={(n, c) => edit((d) => { d.player.shotSpeed = n; }, c)} /></label>
-          <label>Feuerpause (Frames) <NumberInput min={1} max={60} value={pl.fireRate} onCommit={(n, c) => edit((d) => { d.player.fireRate = n; }, c)} /> {secs(pl.fireRate)}</label>
-          <label>Versatz x/y
-            <span className="hitbox">
-              <NumberInput min={-64} max={64} value={pl.shotOffset.x} onCommit={(n, c) => edit((d) => { d.player.shotOffset.x = n; }, c)} />
-              <NumberInput min={-64} max={64} value={pl.shotOffset.y} onCommit={(n, c) => edit((d) => { d.player.shotOffset.y = n; }, c)} />
-            </span>
+          <label>Startwaffe <WeaponSelect value={pl.weaponId} onChange={(v) => edit((d) => { d.player.weaponId = v; })} />
+            <button onClick={() => goto({ tab: 'upgrades', id: pl.weaponId })} title="Schüsse, Stufen und Schaden im Tab „Waffen & Power-ups“ bearbeiten">→ Waffen-Tab</button>
           </label>
-          <label title={HITBOX_TITLE}>Hitbox <HitboxInput value={pl.shotHitbox} onChange={(h, c) => edit((d) => { d.player.shotHitbox = h; }, c)} /></label>
         </div>
         <h3>Explosion</h3>
         <div className="form">
@@ -122,7 +116,7 @@ export function ObjectsEditor() {
           // Sprite und Schuss-Sprite vom letzten Gegnertyp: Spielerschiff/-schuss passen fast nie
           edit((d) => {
             const last = d.enemyTypes[d.enemyTypes.length - 1];
-            d.enemyTypes.push({ id, name: 'Neuer Gegner', spriteId: last?.spriteId ?? d.sprites[0].id, hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot(last?.shot.spriteId ?? d.player.shotSpriteId) });
+            d.enemyTypes.push({ id, name: 'Neuer Gegner', spriteId: last?.spriteId ?? d.sprites[0].id, hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot(last?.shot.spriteId ?? d.weapons.find((w) => w.id === d.player.weaponId)?.spriteId ?? d.sprites[0].id) });
           });
           select({ enemy: id });
         }}>+ Gegnertyp</button>

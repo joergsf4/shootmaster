@@ -5,6 +5,7 @@ import { PaletteEditor } from './editors/PaletteEditor';
 import { TileEditor } from './editors/TileEditor';
 import { SpriteEditor } from './editors/SpriteEditor';
 import { ObjectsEditor } from './editors/ObjectsEditor';
+import { UpgradesEditor } from './editors/UpgradesEditor';
 import { FormationEditor } from './editors/FormationEditor';
 import { LevelEditor } from './editors/LevelEditor';
 import { SoundEditor } from './editors/SoundEditor';
@@ -18,6 +19,7 @@ const TABS: [Tab, string][] = [
   ['levels', '🗺 Level'],
   ['formations', '〰 Formationen'],
   ['objects', '🚀 Spieler & Gegner'],
+  ['upgrades', '🔫 Waffen & Power-ups'],
   ['sprites', '👾 Sprites'],
   ['tiles', '▦ Pinsel'],
   ['palette', '🎨 Paletten'],
@@ -169,6 +171,7 @@ export function App() {
         {tab === 'tiles' && <TileEditor />}
         {tab === 'sprites' && <SpriteEditor />}
         {tab === 'objects' && <ObjectsEditor />}
+        {tab === 'upgrades' && <UpgradesEditor />}
         {tab === 'formations' && <FormationEditor />}
         {tab === 'levels' && <LevelEditor keysOff={!!play || tour} onPlay={(levelId, startCam) => { if (!play) startPlay({ levelId, startCam }); }} />}
         {tab === 'sound' && <SoundEditor />}

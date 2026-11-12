@@ -1,6 +1,7 @@
 import { levelCamMax, levelSpeed, sortedEvents, speedByte } from './compile';
 import { formationMembers, framePositions } from './path';
-import { ACROSS, LEVEL_EVENT_TYPES, MAX_ENEMIES, SHOT_PATTERNS, type EnemyShot, type Level, type LevelEvent, type Project } from './types';
+import { BUDGET_YELLOW, FRAME_CYCLES, upgradeBudget, type BudgetCause } from './budget';
+import { ACROSS, LEVEL_EVENT_TYPES, MAX_ENEMIES, MAX_SHOTS, SHOT_PATTERNS, type EnemyShot, type Level, type LevelEvent, type Project, type Weapon } from './types';
 
 /** Prüft eine geladene Projektdatei (Vertrauensgrenze). Gibt den ersten Fehler zurück oder null. */
 export function validateProject(p: unknown): string | null {
@@ -10,7 +11,14 @@ export function validateProject(p: unknown): string | null {
   if (!o.palettes || !Array.isArray(o.palettes.bg) || !Array.isArray(o.palettes.sprite)) return 'Paletten fehlen';
   for (const k of ['metatiles', 'sprites', 'enemyTypes', 'formations', 'levels', 'songs', 'sfx'] as const)
     if (!Array.isArray(o[k])) return `„${k}“ fehlt`;
-  if (!o.player || typeof o.player.spriteId !== 'string') return 'Spielerdefinition fehlt';
+  if (!o.player || typeof o.player.spriteId !== 'string' || typeof o.player.weaponId !== 'string') return 'Spielerdefinition fehlt';
+  const num = (v: unknown) => Number.isFinite(v);
+  // Tempo > 0 (sonst verstopfen stehende Schüsse den Pool), je Stufe 1..MAX_SHOTS Austritte (0 gäbe in der Engine keine Salve)
+  const badWeapon = (w: Partial<Weapon> | null) => !w || typeof w !== 'object' || !w.id || typeof w.spriteId !== 'string' || !num(w.speed) || !(w.speed! > 0)
+    || !Array.isArray(w.levels) || !w.levels.length || w.levels.some((l) => !l || !num(l.fireRate) || !num(l.damage) || !Array.isArray(l.emitters)
+      || l.emitters.length < 1 || l.emitters.length > MAX_SHOTS || l.emitters.some((e) => !e || !num(e.ahead) || !num(e.side) || !num(e.dir)));
+  if (!Array.isArray(o.weapons) || o.weapons.some(badWeapon)) return 'Ungültige Waffe';
+  if (!o.upgrades || !['off', 'direct', 'gauge'].includes(o.upgrades.style)) return 'Upgrade-Einstellungen fehlen';
   const badShot = (s: Partial<EnemyShot> | undefined) => !s || typeof s !== 'object' || !SHOT_PATTERNS.includes(s.pattern!)
     || !Number.isFinite(s.interval) || !Number.isFinite(s.speed) || typeof s.spriteId !== 'string';
   if (o.enemyTypes!.some((t) => !t?.id || typeof t.spriteId !== 'string' || badShot(t.shot))) return 'Ungültiger Gegnertyp';
@@ -31,9 +39,9 @@ export function validateProject(p: unknown): string | null {
 
 // ---------- Inhaltliche Prüfung (Problem-Panel) ----------
 
-export type EditorTab = 'palette' | 'tiles' | 'sprites' | 'objects' | 'formations' | 'levels' | 'sound';
-/** Sprungziel im Editor: Tab und Element-ID; Level: events = Ereignis-Werkzeug öffnen, pos = dorthin scrollen und das Ereignis an dieser Position wählen */
-export interface DiagRef { tab: EditorTab; id?: string; events?: boolean; pos?: number }
+export type EditorTab = 'palette' | 'tiles' | 'sprites' | 'objects' | 'upgrades' | 'formations' | 'levels' | 'sound';
+/** Sprungziel im Editor: Tab und Element-ID; Level: events = Ereignis-Werkzeug öffnen, pos = dorthin scrollen und das Ereignis an dieser Position wählen; Waffe: stage = Stufe (0 = Stufe 1) */
+export interface DiagRef { tab: EditorTab; id?: string; events?: boolean; pos?: number; stage?: number }
 export interface Diagnostic { severity: 'error' | 'warn'; msg: string; ref: DiagRef }
 /** Wer ein Element verwendet */
 export interface Use { label: string; ref: DiagRef }
@@ -41,7 +49,7 @@ export interface Use { label: string; ref: DiagRef }
 export function spriteUsers(p: Project, id: string): Use[] {
   const u: Use[] = [];
   if (p.player.spriteId === id) u.push({ label: 'Spieler', ref: { tab: 'objects' } });
-  if (p.player.shotSpriteId === id) u.push({ label: 'Schuss', ref: { tab: 'objects' } });
+  for (const w of p.weapons) if (w.spriteId === id) u.push({ label: `Waffe „${w.name}“`, ref: { tab: 'upgrades', id: w.id } });
   if (p.explosionSpriteId === id) u.push({ label: 'Explosion', ref: { tab: 'objects' } });
   for (const e of p.enemyTypes) {
     if (e.spriteId === id) u.push({ label: `Gegnertyp „${e.name}“`, ref: { tab: 'objects', id: e.id } });
@@ -49,6 +57,9 @@ export function spriteUsers(p: Project, id: string): Use[] {
   }
   return u;
 }
+
+export const weaponUsers = (p: Project, id: string): Use[] =>
+  p.player.weaponId === id ? [{ label: 'Spieler (Startwaffe)', ref: { tab: 'objects' } }] : [];
 
 export const enemyTypeUsers = (p: Project, id: string): Use[] =>
   p.formations.filter((f) => f.enemyTypeId === id).map((f) => ({ label: `Formation „${f.name}“`, ref: { tab: 'formations', id: f.id } }));
@@ -111,6 +122,16 @@ export function peakEnemies(p: Project, lv: Level): { count: number; pos: number
   return { count, pos: at };
 }
 
+/** Rat passend zur Ursache der teuersten Stelle */
+export const BUDGET_ADVICE: Record<BudgetCause, string> = {
+  enemies: 'Gegnerwellen entzerren oder „Warten“ einfügen',
+  enemyShots: 'Gegner seltener schießen lassen (längere Feuerpause) oder weniger Schützen',
+  playerShots: 'Waffenstufe abschwächen (weniger Austritte, längere Feuerpause)',
+};
+
+/** Länger verlangsamt (Spielbilder, ≈ 10 s) gibt eine eigene Warnung */
+export const SLOW_FRAMES = 600;
+
 /** Alle inhaltlichen Fehler (verhindern Spielen/Export) und Warnungen. Erwartet ein strukturell gültiges Projekt. */
 export function lintProject(p: Project): Diagnostic[] {
   const out: Diagnostic[] = [];
@@ -122,13 +143,21 @@ export function lintProject(p: Project): Diagnostic[] {
 
   // Spieler & Gegner
   if (!sprite.has(p.player.spriteId)) add('error', 'Spieler: Sprite fehlt – neu wählen', objects);
-  if (!sprite.has(p.player.shotSpriteId)) add('error', 'Schuss: Sprite fehlt – neu wählen', objects);
+  const start = p.weapons.find((w) => w.id === p.player.weaponId);
+  if (!start) add('error', 'Spieler: Startwaffe fehlt – neu wählen', objects);
+  for (const w of p.weapons) {
+    const ref: DiagRef = { tab: 'upgrades', id: w.id };
+    if (!sprite.has(w.spriteId)) add('error', `Waffe „${w.name}“: Sprite fehlt – neu wählen`, ref);
+    w.levels.forEach((l, i) => {
+      if (l.emitters.length > MAX_SHOTS) add('error', `Waffe „${w.name}“, Stufe ${i + 1}: Salve aus ${l.emitters.length} Schüssen, höchstens ${MAX_SHOTS} – Austritte entfernen`, ref);
+    });
+  }
   if (!sprite.has(p.explosionSpriteId)) add('error', 'Explosion: Sprite fehlt – neu wählen', objects);
   for (const e of p.enemyTypes) {
     const ref: DiagRef = { tab: 'objects', id: e.id };
     if (!sprite.has(e.spriteId)) add('error', `Gegnertyp „${e.name}“: Sprite fehlt – neu wählen`, ref);
     if (e.shot.pattern !== 'none' && !sprite.has(e.shot.spriteId)) add('error', `Gegnertyp „${e.name}“: Schuss-Sprite fehlt – neu wählen`, ref);
-    else if (e.shot.pattern !== 'none' && e.shot.spriteId === p.player.shotSpriteId)
+    else if (e.shot.pattern !== 'none' && e.shot.spriteId === start?.spriteId)
       add('warn', `Gegnertyp „${e.name}“: Schuss sieht aus wie der Spielerschuss – eigenes Sprite wählen`, ref);
     if (!enemyTypeUsers(p, e.id).length) add('warn', `Gegnertyp „${e.name}“ wird in keiner Formation verwendet – dort wählen oder löschen`, ref);
   }
@@ -171,6 +200,21 @@ export function lintProject(p: Project): Diagnostic[] {
     if (peak.count > MAX_ENEMIES)
       add('warn', `${name}: bis zu ${peak.count} Gegner gleichzeitig (bei ${peak.pos} px), höchstens ${MAX_ENEMIES} erscheinen – Abstand vergrößern oder „Warten“ einfügen`, { ...ref, events: true, pos: peak.pos });
     if (lv.musicId && !p.songs.some((s) => s.id === lv.musicId)) add('warn', `${name}: Musik wurde gelöscht – neu wählen`, ref);
+    // Rechenzeit (budget.ts, Planungsschätzung): Sperre nur bei Rot (über PLAN.BLOCK), Warnung ab einem vollen Bild, darunter nur die Ampel im Waffen-Tab
+    // shortcut: andere Waffen prüft der Lint erst, wenn Kapseln sie erreichbar machen (E2); im Waffen-Tab zeigt die Ampel sie schon
+    if (start) {
+      const b = upgradeBudget(p, lv);
+      const at = { ...ref, events: true, pos: b.pos };
+      if (b.level === 'red') add('error', `${name}: bei ${b.pos} px zu viel Rechenzeit, das Spiel kann bis auf ein Drittel Tempo fallen – ${BUDGET_ADVICE[b.cause]}`, at);
+      else if (b.cost > BUDGET_YELLOW) add('warn', `${name}: kann bei ${b.pos} px stark verlangsamen (bis Drittel-Tempo) – ${BUDGET_ADVICE[b.cause]}`, at);
+      else if (b.cost > FRAME_CYCLES) add('warn', `${name}: kann bei ${b.pos} px kurz verlangsamen – nur ändern, wenn es stört: ${BUDGET_ADVICE[b.cause]}`, at);
+      if (b.slowFrames > SLOW_FRAMES) add('warn', `${name}: kann ab ${b.slowPos} px rund ${Math.round(b.slowFrames / 60)} s am Stück verlangsamen – ${BUDGET_ADVICE[b.cause]}`, { ...ref, events: true, pos: b.slowPos });
+      // höhere Stufen der Startwaffe (ab E2 per Kapsel erreichbar): nur Warnung
+      for (let i = 1; i < start.levels.length; i++) {
+        const h = upgradeBudget(p, lv, { weapon: start, level: i });
+        if (h.level === 'red') add('warn', `Waffe „${start.name}“, Stufe ${i + 1}: in ${name} bei ${h.pos} px zu viel Rechenzeit – ${BUDGET_ADVICE[h.cause]}`, { tab: 'upgrades', id: start.id, stage: i });
+      }
+    }
   }
 
   // Sound

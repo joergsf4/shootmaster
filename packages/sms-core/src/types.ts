@@ -58,12 +58,42 @@ export interface PlayerDef {
   speed: number; // px/Frame (1..4)
   hitbox: Hitbox;
   lives: number;
-  shotSpriteId: string;
-  shotSpeed: number; // px/Frame
-  shotHitbox: Hitbox;
-  fireRate: number; // Frames zwischen Schüssen
-  shotOffset: Point; // relativ zum Spieler
+  /** Startwaffe (Stufe 1) */
+  weaponId: string;
 }
+
+/**
+ * Schussaustritt relativ zur Flugrichtung (horizontal nach rechts, vertikal nach oben); der Compiler dreht ihn für vertikale Level.
+ * ahead/side: Abstand der Schussmitte von der Schiffsmitte in px nach vorn bzw. nach rechts (zur Flugrichtung).
+ * dir: Richtung 0..15 in 22,5°-Schritten im Uhrzeigersinn, 0 = geradeaus, 4 = rechts, 8 = nach hinten.
+ */
+export interface Emitter { ahead: number; side: number; dir: number }
+
+export interface WeaponLevel {
+  /** Frames zwischen Salven (1..60) */
+  fireRate: number;
+  /** Schaden je Treffer (1..255) */
+  damage: number;
+  /** je Austritt ein Schuss pro Salve */
+  emitters: Emitter[];
+}
+
+export interface Weapon {
+  id: string;
+  name: string;
+  spriteId: string;
+  /** px/Frame (Raster 1/16) */
+  speed: number;
+  /** Durchschlag: Schuss fliegt nach einem Treffer weiter */
+  pierce: boolean;
+  /** fehlt: sichtbare Pixel des ersten Frames */
+  hitbox?: Hitbox;
+  levels: WeaponLevel[];
+}
+
+/** off: nur die Startwaffe · direct: Kapseln wirken sofort · gauge: Gradius-Leiste (direct/gauge folgen mit den Kapseln) */
+export type UpgradeStyle = 'off' | 'direct' | 'gauge';
+export interface UpgradeSettings { style: UpgradeStyle }
 
 export type FormationMode = 'chain' | 'block';
 
@@ -155,6 +185,8 @@ export interface Project {
   sprites: SpriteGfx[];
   explosionSpriteId: string;
   player: PlayerDef;
+  weapons: Weapon[];
+  upgrades: UpgradeSettings;
   enemyTypes: EnemyType[];
   formations: Formation[];
   levels: Level[];
@@ -169,6 +201,10 @@ export const SCREEN_W = 256;
 export const SCREEN_H = 192;
 export const MAX_BG_TILES = 256;
 export const MAX_SPRITE_TILES = 192;
-export const MAX_ENEMIES = 12;
-export const MAX_SHOTS = 6;
+export const MAX_ENEMIES = 16;
+/** Spielerschüsse gleichzeitig (Pool) und höchstens je Salve */
+export const MAX_SHOTS = 10;
+/** UI-Grenzen je Waffe */
+export const MAX_EMITTERS = 5;
+export const MAX_WEAPON_LEVELS = 8;
 export const MAX_ENEMY_SHOTS = 16;

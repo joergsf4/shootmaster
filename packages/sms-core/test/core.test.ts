@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { bakePath, buildRom, compileProject, createDemoProject, validateProject, decodeTile, encodeNameEntry, encodeTile, engineBinary, framePositions, rgbToSms, smsToRgb } from '../src/index';
 import { SMS, BTN, PSG } from '../../sms-emu/src/index';
+import { bench1, bench2, bench3, fanScene, ring16, roam, wiggle } from './scenes';
 
 // Die Emulator-Tests laufen synchron; ohne Makrotask dazwischen beantwortet der Worker keine RPCs und Vitest meldet nach 60 s „Timeout calling onTaskUpdate“
 afterEach(() => new Promise((r) => setTimeout(r)));
-import { COST, ENGINE_SYMBOLS, budgetLevel, createTemplateProject, frameCost, layoutSprites, type FrameLoad, layoutBgTiles, levelCamMax, levelDuration, lintProject, peakEnemies, shrinkLoss, stackNeighbor, periodTable, shotVelocity, spriteUsers, upgradeProject, type EnemyShot, type Level, type LevelEvent, type Metatile } from '../src/index';
+import { BUDGET_GREEN, BUDGET_YELLOW, COST, ENGINE_SYMBOLS, budgetLevel, createTemplateProject, frameCost, layoutSprites, type FrameLoad, layoutBgTiles, levelCamMax, levelDuration, lintProject, peakEnemies, shrinkLoss, stackNeighbor, periodTable, shotVelocity, spriteUsers, upgradeBudget, upgradeProject, weaponPreset, weaponUsers, type EnemyShot, type Level, type LevelEvent, type Metatile, type Weapon } from '../src/index';
 
 describe('Hardware-Primitive', () => {
   it('kodiert Tiles planar 4bpp und zurück', () => {
@@ -61,8 +62,8 @@ describe('ROM', () => {
       sms.buttons = BTN.b1;
       sms.runFrame();
       const r = sms.ram;
-      maxEnemies = Math.max(maxEnemies, [...Array(12)].filter((_, i) => r[0x200 + i * 16] >= 2).length);
-      if ([...Array(6)].some((_, i) => r[0x300 + i * 16] === 2)) sawShot = true;
+      maxEnemies = Math.max(maxEnemies, [...Array(16)].filter((_, i) => r[0x200 + i * 16] >= 2).length);
+      if ([...Array(10)].some((_, i) => r[0x300 + i * 16] === 2)) sawShot = true;
     }
     return { cam: sms.ram[6] | (sms.ram[7] << 8), maxEnemies, sawShot, sms };
   };
@@ -93,14 +94,14 @@ describe('ROM', () => {
 describe('Spielregeln', () => {
   it('Schuss erscheint nicht am anderen Bildschirmrand, wenn der Versatz überläuft', () => {
     const p = createDemoProject();
-    p.player.shotOffset.x = 30;
+    p.weapons[0].levels[0].emitters[0].ahead = 26; // Schuss 30 px rechts von der Schiffskante (früher shotOffset.x = 30)
     p.levels[0].events = [];
     const sms = new SMS(buildRom(engineBinary(), p).rom);
     let wrapped = false;
     for (let f = 0; f < 400; f++) {
       sms.buttons = BTN.right | (f > 200 ? BTN.b1 : 0);
       sms.runFrame();
-      for (let i = 0; i < 6; i++) if (sms.ram[0x300 + i * 16] === 2 && sms.ram[0x302 + i * 16] < 100) wrapped = true;
+      for (let i = 0; i < 10; i++) if (sms.ram[0x300 + i * 16] === 2 && sms.ram[0x302 + i * 16] < 100) wrapped = true;
     }
     expect(sms.ram[0x82]).toBe(240);
     expect(wrapped).toBe(false);
@@ -235,8 +236,8 @@ describe('Vorlagen „Neu“', () => {
     for (let f = 0; f < 300; f++) {
       sms.buttons = BTN.b1;
       sms.runFrame();
-      maxEnemies = Math.max(maxEnemies, [...Array(12)].filter((_, i) => sms.ram[0x200 + i * 16] >= 2).length);
-      if ([...Array(6)].some((_, i) => sms.ram[0x300 + i * 16] === 2)) sawShot = true;
+      maxEnemies = Math.max(maxEnemies, [...Array(16)].filter((_, i) => sms.ram[0x200 + i * 16] >= 2).length);
+      if ([...Array(10)].some((_, i) => sms.ram[0x300 + i * 16] === 2)) sawShot = true;
     }
     expect(sms.ram[6] | (sms.ram[7] << 8)).toBeGreaterThan(100);
     expect(maxEnemies).toBeGreaterThanOrEqual(1);
@@ -246,8 +247,11 @@ describe('Vorlagen „Neu“', () => {
 
 describe('Problem-Panel (lintProject)', () => {
   const msgs = (p: ReturnType<typeof createDemoProject>, sev: 'error' | 'warn') => lintProject(p).filter((d) => d.severity === sev).map((d) => d.msg);
-  it('Demo-Projekt hat keine Probleme', () => {
-    expect(lintProject(createDemoProject())).toEqual([]);
+  // Rechenzeit: ohne Abschüsse kommen beide Demo-Level knapp über ein Bild (gemessen bis 61 170 Takte) – ehrlich gelb, nie rot
+  it('Demo-Projekt hat keine Fehler, nur die Rechenzeit-Hinweise (gelb)', () => {
+    const d = lintProject(createDemoProject());
+    expect(d.filter((x) => x.severity === 'error')).toEqual([]);
+    expect(d.every((x) => x.msg.includes('verlangsamen'))).toBe(true);
   });
   it('meldet die stillen Fälle des Compilers', () => {
     const p = createDemoProject();
@@ -255,11 +259,11 @@ describe('Problem-Panel (lintProject)', () => {
     lv.events.push({ pos: 100, type: 'spawn', formationId: 'weg' });
     lv.map[0] = p.metatiles.length; // würde per Modulo zu Pinsel 0
     lv.map[1] = -1;
-    p.formations[0].count = 14;
+    p.formations[0].count = 18;
     const d = lintProject(p);
     expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: Ereignis bei 100 px verweist auf gelöschte Formation – neu wählen oder löschen`, ref: { tab: 'levels', id: lv.id, events: true, pos: 100 } });
     expect(d).toContainEqual({ severity: 'error', msg: `Level „${lv.name}“: 2 Felder mit fehlendem Pinsel – neu malen`, ref: { tab: 'levels', id: lv.id } });
-    expect(d).toContainEqual({ severity: 'warn', msg: `Formation „${p.formations[0].name}“: 14 Gegner, höchstens 12 erscheinen – Anzahl senken`, ref: { tab: 'formations', id: p.formations[0].id } });
+    expect(d).toContainEqual({ severity: 'warn', msg: `Formation „${p.formations[0].name}“: 18 Gegner, höchstens 16 erscheinen – Anzahl senken`, ref: { tab: 'formations', id: p.formations[0].id } });
   });
   it('meldet tote Sprites/Gegnertypen, kurze Pfade, Ereignisse hinter dem Ende, leere Level und Unbenutztes', () => {
     const p = createDemoProject();
@@ -302,17 +306,17 @@ describe('Problem-Panel (lintProject)', () => {
     expect(spriteUsers(p, e.spriteId)).toContainEqual({ label: `Gegnertyp „${e.name}“`, ref: { tab: 'objects', id: e.id } });
     expect(spriteUsers(p, p.player.spriteId)[0].label).toBe('Spieler');
   });
-  // Zwei 8er-Ketten kurz nacheinander: die Engine hat nur 12 Gegner-Slots und verwirft den Rest still
-  it.each([[16, 16, 12], [200, 8, 8]])('Ereignisse bei 0 und %i: Vorhersage %i gleichzeitig, Engine zeigt höchstens %i', (pos2, predicted, inGame) => {
+  // Zwei 10er-Ketten kurz nacheinander: die Engine hat nur 16 Gegner-Slots und verwirft den Rest still
+  it.each([[16, 20, 16], [300, 10, 10]])('Ereignisse bei 0 und %i: Vorhersage %i gleichzeitig, Engine zeigt höchstens %i', (pos2, predicted, inGame) => {
     const p = createTemplateProject('h');
     const f = p.formations[0];
-    f.count = 8;
+    f.count = 10;
     p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: f.id }, { pos: pos2, type: 'spawn', formationId: f.id }];
     expect(peakEnemies(p, p.levels[0]).count).toBe(predicted);
-    expect(lintProject(p).some((d) => d.msg.includes('gleichzeitig'))).toBe(predicted > 12);
+    expect(lintProject(p).some((d) => d.msg.includes('Gegner gleichzeitig (bei'))).toBe(predicted > 16);
     const sms = new SMS(buildRom(engineBinary(), p).rom);
     let max = 0;
-    for (let fr = 0; fr < 600; fr++) { sms.runFrame(); max = Math.max(max, [...Array(12)].filter((_, i) => sms.ram[0x200 + i * 16] !== 0).length); }
+    for (let fr = 0; fr < 700; fr++) { sms.runFrame(); max = Math.max(max, [...Array(16)].filter((_, i) => sms.ram[0x200 + i * 16] !== 0).length); }
     expect(max).toBe(inGame);
   });
 });
@@ -400,7 +404,7 @@ describe('„Ab hier spielen“ (startCam, unverwundbar)', () => {
 
 describe('Level-Ereignisse: Tempo, Musik, Warten, Checkpoint', () => {
   const cam = (sms: SMS) => sms.ram[6] | (sms.ram[7] << 8);
-  const busy = (sms: SMS) => [...Array(12)].filter((_, i) => sms.ram[0x200 + i * 16] !== 0).length;
+  const busy = (sms: SMS) => [...Array(16)].filter((_, i) => sms.ram[0x200 + i * 16] !== 0).length;
   const withEvents = (events: LevelEvent[]) => { const p = createTemplateProject('h'); p.levels[0].events = events; return p; };
   const evList = (bank: Uint8Array) => {
     const out: number[][] = [];
@@ -670,8 +674,12 @@ describe('Gegnerschüsse', () => {
   // ---- Taktmessung (SMS.busy/maxBusy): Arbeit je Spielbild, ohne die Wartezeit im halt ----
   const S = ENGINE_SYMBOLS;
   const FRAME = 59736;
-  const MAXBUSY_E0 = 72000; // vor E0 (d733060): H 94 192, V 91 125; nach E0: H 67 286, V 65 647
-  const GOLDEN = [[900, 1028066320], [900, 2301853528], [400, 3735968378]]; // [Spielbilder, Hash], gemessen mit Engine-Stand d733060
+  const MAXBUSY_E0 = 90000; // vor E0 (d733060, 6 Schüsse): H 94 192, V 91 125; nach E0: H 67 286, V 65 647; E1 mit 10 Schüssen: H 85 339, V 82 103
+  // [Spielbilder, Hash]: Demo H, Demo V, Schussbahn, Wand, Körpertreffer+Abschuss
+  // Neu kalibriert mit E1 (16 Gegner-Slots, 10 Schuss-Slots, Leben und PSG im Hash). Vorher geprüft (Skript gegen Stand 85bd348):
+  // alte Projekte nach upgradeProject Bild für Bild gleich in Spieler, Leben, Gegnern, Gegner-/Spielerschüssen, SAT-Inhalt und PSG
+  // Neu kalibriert mit der Treffermaske: Byte 15 der Schüsse (früher B_LAST) bleibt jetzt 0; Verhalten gegen 85bd348 erneut Bild für Bild gleich geprüft
+  const GOLDEN = [[900, 26802711], [900, 3923879040], [400, 4205206404], [400, 503720365], [200, 1536139417]];
   const count = (sms: SMS, base: number, n: number) => [...Array(n)].filter((_, i) => sms.ram[base - 0xc000 + i * 16] !== 0).length;
   // Spitzenlast der Spielbilder 100..249 (Startschutz und Spawn vorbei, Sitzer noch auf dem Pfad)
   const peak = (p: ReturnType<typeof createTemplateProject>, b1: boolean, pcCycles?: Uint32Array) => {
@@ -682,13 +690,13 @@ describe('Gegnerschüsse', () => {
       sms.buttons = b1 ? BTN.b1 : 0;
       sms.runFrame();
     }
-    return { max: sms.maxBusy, frames, enemies: count(sms, S.enemies, S.MAXE), shots: count(sms, S.shots, S.MAXS), bullets: count(sms, S.bullets, S.MAXB) };
+    return { max: sms.maxBusy, frames, enemies: count(sms, S.enemies, S.MAXE), shots: count(sms, S.shots, S.MAXPS), bullets: count(sms, S.bullets, S.MAXB) };
   };
   // n Gegner fast still, abseits der Schussbahn (H: über dem Spieler, V: links von ihm); rapid = Spieler-Pool immer voll
   const scene = (o: 'h' | 'v', n: number, shot: Partial<EnemyShot> = { pattern: 'none' }, rapid = true, wide = false) => {
     const p = o === 'h' ? sitter('h', 200, 30, shot, 0, n) : sitter('v', 40, 60, shot, 0, n);
     if (!n) p.levels[0].events = [];
-    if (rapid) p.player.fireRate = 1;
+    if (rapid) p.weapons[0].levels[0].fireRate = 1;
     if (wide) p.enemyTypes[0].hitbox = { x: 0, y: 2, w: 248, h: 12 }; // jede Schuss-X überlappt: Paarprüfung läuft immer ganz durch
     return p;
   };
@@ -728,34 +736,78 @@ describe('Gegnerschüsse', () => {
 
   // 12 Gegner + 6 Spielerschüsse sprengen das Bild weiterhin (59 736), aber E0 spart rund 27 000 Takte; die Grenze sichert das ab
   // shortcut: passt erst mit weniger Gegnern/Schüssen ins Bild; das Budget-Modell (E1) sperrt solche Kombinationen
-  it('Rechenzeit: 12 Gegner und Dauerfeuer (6 Schüsse) sind deutlich billiger als vor E0', () => {
+  // shortcut: 12 Gegner + volles Dauerfeuer passt erst mit weniger Gegnern/Schüssen ins Bild; das Budget (upgradeBudget) meldet solche Kombinationen
+  it('Rechenzeit: 12 Gegner und Dauerfeuer (10 Schüsse) bleiben unter dem Stand vor E0 (mit nur 6 Schüssen)', () => {
     const r = (['h', 'v'] as const).map((o) => ({ o, ...peak(scene(o, 12), true) }));
+    if (process.env.PROFILE) console.log('12 Gegner + Dauerfeuer', r.map((x) => `${x.o} ${x.max}`).join(', '));
     for (const x of r) {
-      expect([x.o, x.enemies, x.shots]).toEqual([x.o, 12, 6]);
+      expect([x.o, x.enemies, x.shots >= S.MAXPS - 1]).toEqual([x.o, 12, true]); // Pool (fast) voll
       expect(x.max).toBeLessThan(MAXBUSY_E0);
     }
   });
 
-  // Verhalten pro Spielbild (nicht pro Emulator-Bild, damit gesparte Takte nichts verschieben): Hash über Spieler, SAT und alle Objekt-Pools
-  const trace = (p: ReturnType<typeof createDemoProject>, games: number) => {
+  // Verhalten pro Spielbild (nicht pro Emulator-Bild, damit gesparte Takte nichts verschieben): Hash über Spieler, Leben, PSG, SAT und alle Objekt-Pools
+  // poke(sms, g): RAM-Eingriff vor Spielbild g (erzwingt seltene Fälle)
+  const trace = (p: ReturnType<typeof createDemoProject>, games: number, poke?: (sms: SMS, g: number) => void) => {
     const sms = new SMS(buildRom(engineBinary(), p).rom);
-    const areas = [[S.frame, 1], [S.camPos, 2], [S.rot, 3], [S.bulCount, 1], [S.sfxLeft, 2], [S.player, 16], [S.satY, 0xc0], [S.enemies, 0x300]];
-    const skip = (a: number) => a >= S.shots && a < S.shots + 0x100 && ((a & 15) === S.B_DEF || (a & 15) === S.B_DEF + 1); // seit E0: Zeichenzeiger der Spielerschüsse
+    const areas = [[S.frame, 1], [S.camPos, 2], [S.rot, 3], [S.lives, 1], [S.bulCount, 1], [S.sfxLeft, 2], [S.player, 16], [S.satY, 0xc0], [S.enemies, 0x300]];
+    // Zeichen-/Datenzeiger der Schüsse hängen am Datenlayout, nicht am Verhalten
+    const skip = (a: number) => a >= S.shots && ((a & 15) === S.B_DEF || (a & 15) === S.B_DEF + 1) && (a < S.shots + 0x100 || a >= S.bullets);
     let g = 0, h = 2166136261;
     sms.onHalt = () => {
       if (g >= games) return;
       for (const [a, n] of areas) for (let i = 0; i < n; i++) if (!skip(a + i)) h = Math.imul(h ^ sms.ram[a - 0xc000 + i], 16777619);
+      for (const v of sms.psg.regs) h = Math.imul(h ^ v, 16777619);
       g++;
       sms.buttons = BTN.b1 | [BTN.up, BTN.right, BTN.down, BTN.left][(g >> 5) & 3];
+      poke?.(sms, g);
     };
     for (let f = 0; f < games * 2 && g < games; f++) sms.runFrame();
     return [g, h >>> 0];
   };
-  it('Kollision und Zeichnen verhalten sich wie vor E0 (Hash je Spielbild, Stand d733060)', () => {
+  // Tödliche Metallwand (Pinsel 6) quer durch die Schussbahn und die Flugbahn des Spielers
+  const wall = () => {
+    const p = createDemoProject();
+    p.levels = [p.levels[0]];
+    p.levels[0].events = [];
+    for (let c = 9; c < 11; c++) for (let r = 3; r < 9; r++) p.levels[0].map[c * 12 + r] = 6;
+    return p;
+  };
+  // Zwei Gegner, HP 1: vor Spielbild 120 sitzt Slot 0 auf dem Spieler und Slot 1 auf dem ersten Spielerschuss → Körpertreffer und Abschuss im selben Bild
+  const pair = () => { const p = sitter('h', 200, 30, { pattern: 'none' }, 0, 2); p.enemyTypes[0].hp = 1; return p; };
+  const pokePair = (sms: SMS, g: number) => {
+    if (g !== 120) return;
+    const r = sms.ram, at = (a: number) => a - 0xc000;
+    const shot = [...Array(S.MAXPS)].map((_, i) => at(S.shots) + i * 16).find((a) => r[a]);
+    if (shot === undefined) throw new Error('kein Spielerschuss');
+    const put = (slot: number, x: number, y: number) => { const e = at(S.enemies) + slot * 16; r[e + S.O_X] = x; r[e + S.O_X + 1] = 0; r[e + S.O_Y] = y; r[e + S.O_Y + 1] = 0; };
+    put(0, r[at(S.player) + S.O_X], r[at(S.player) + S.O_Y]);
+    put(1, r[shot + S.O_X], r[shot + S.O_Y]);
+  };
+  it('Körpertreffer und Abschuss eines späteren Slots im selben Bild: Explosions-Ton nach dem Treffer-Ton', () => {
+    const p = pair();
+    const sms = new SMS(buildRom(engineBinary(), p).rom);
+    let g = 0, seen = false;
+    sms.onHalt = () => {
+      g++;
+      sms.buttons = BTN.b1;
+      if (g === 121) { // Spielbild nach dem Eingriff
+        const e = (slot: number) => sms.ram[S.enemies - 0xc000 + slot * 16];
+        expect([sms.ram[S.lives - 0xc000], e(0), e(1), sms.ram[S.sfxCh - 0xc000]]).toEqual([2, 2, 3, 3]); // Leben weg, Slot 0 lebt, Slot 1 explodiert, Rauschkanal = Explosion
+        seen = true;
+      }
+      pokePair(sms, g);
+    };
+    for (let f = 0; f < 200 && !seen; f++) sms.runFrame();
+    expect(seen).toBe(true);
+  });
+  it('Verhalten je Spielbild bleibt gleich (Hash; Stand E1, vorher bildgleich zu E0 geprüft)', () => {
     const demo = (i: number) => { const p = createDemoProject(); p.levels = [p.levels[i]]; return p; };
     const lane = sitter('h', 200, 96, { pattern: 'aimed', interval: 30, speed: 1.5 }, 0, 12); // 12 Gegner in der Schussbahn, HP 2
     lane.enemyTypes[0].hp = 2;
-    expect([trace(demo(0), 900), trace(demo(1), 900), trace(lane, 400)]).toEqual(GOLDEN);
+    const got = [trace(demo(0), 900), trace(demo(1), 900), trace(lane, 400), trace(wall(), 400), trace(pair(), 200, pokePair)];
+    if (process.env.PROFILE) console.log('GOLDEN', JSON.stringify(got));
+    expect(got).toEqual(GOLDEN);
   });
 
   // ---- Budget-Modell (budget.ts): Residuen gegen Szenen, aus denen die Konstanten NICHT stammen ----
@@ -763,7 +815,7 @@ describe('Gegnerschüsse', () => {
   const loadOf = (p: ReturnType<typeof createDemoProject>, frames: number, from: number, move: (g: number) => number) => {
     const lay = layoutSprites(p.sprites);
     const parts = (id: string) => Math.max(0, ...(lay.metasprites.get(id) ?? [[]]).map((f) => f.length));
-    const enParts = p.enemyTypes.map((t) => parts(t.spriteId)), boom = parts('boom'), shotParts = parts(p.player.shotSpriteId);
+    const enParts = p.enemyTypes.map((t) => parts(t.spriteId)), boom = parts('boom'), shotParts = parts(p.weapons.find((w) => w.id === p.player.weaponId)!.spriteId);
     const bulParts = Math.max(1, ...p.enemyTypes.map((t) => (t.shot && t.shot.pattern !== 'none' ? parts(t.shot.spriteId) : 1)));
     const sms = new SMS(buildRom(engineBinary(), p, { invincible: true }).rom);
     const pc = new Uint32Array(0x10000);
@@ -782,55 +834,13 @@ describe('Gegnerschüsse', () => {
         const st = r(S.enemies + i * 16);
         if (st) { l.enemies++; l.extraSprites += Math.max(0, (st === 3 ? boom : enParts[r(S.enemies + i * 16 + S.O_TYPE)]) - 2); }
       }
-      for (let i = 0; i < S.MAXS; i++) if (r(S.shots + i * 16)) { l.playerShots++; l.extraSprites += Math.max(0, shotParts - 1); }
+      for (let i = 0; i < S.MAXPS; i++) if (r(S.shots + i * 16)) { l.playerShots++; l.extraSprites += Math.max(0, shotParts - 1); }
       for (let i = 0; i < S.MAXB; i++) if (r(S.bullets + i * 16)) { l.enemyShots++; l.extraSprites += bulParts - 1; }
       out.push({ busy: sms.busy, l });
     };
     for (let f = 0; f < frames; f++) sms.runFrame();
     return out;
   };
-  const px = (w: number, h: number, f: (x: number, y: number) => number) => [...Array(w * h)].map((_, i) => f(i % w, Math.floor(i / w)));
-  // Laser-Nachbildung: Spielerschuss 32×8 (4 Hardware-Sprites)
-  const laser = (p: ReturnType<typeof createDemoProject>) => {
-    p.sprites.push({ id: 'laser', name: 'Laser', width: 32, height: 8, frames: [px(32, 8, (x, y) => (y >= 3 && y <= 4 ? 6 : 0))], frameDelay: 8 });
-    Object.assign(p.player, { shotSpriteId: 'laser', shotHitbox: { x: 0, y: 3, w: 32, h: 2 }, fireRate: 4, shotSpeed: 6 });
-    return p;
-  };
-  const roam = (g: number) => [BTN.up, BTN.right, BTN.down, BTN.left][(g >> 5) & 3];
-  const wiggle = (g: number) => [BTN.up, BTN.down][(g >> 4) & 1];
-  // Benchmark (1): Kette aus 4 + 3 kleine Schiffe, Spieler mit Laser (Satellit erst ab E1)
-  const bench1 = () => {
-    const p = laser(createTemplateProject('h'));
-    p.formations = [
-      { id: 'k4', name: 'Kette4', enemyTypeId: 'e-1', speed: 1, mode: 'chain', count: 4, spacing: 18, offsets: [], points: [{ x: 264, y: 40 }, { x: 180, y: 70 }, { x: 120, y: 40 }, { x: -40, y: 70 }] },
-      { id: 'b3', name: 'Block3', enemyTypeId: 'e-1', speed: 0.7, mode: 'block', count: 3, spacing: 0, offsets: [{ x: 0, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 40 }], points: [{ x: 264, y: 110 }, { x: -40, y: 110 }] },
-    ];
-    p.enemyTypes[0].hp = 3;
-    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'k4' }, { pos: 10, type: 'spawn', formationId: 'b3' }];
-    return p;
-  };
-  // Benchmark (2): Ring aus 12 (MAXE; 14–16 erst ab E1) um den Spieler, gezielte Schüsse, Kamera steht
-  const bench2 = () => {
-    const p = createTemplateProject('h');
-    p.player.shotOffset = { x: 12, y: 0 };
-    p.enemyTypes[0].hp = 50;
-    p.enemyTypes[0].shot = { ...p.enemyTypes[0].shot, pattern: 'aimed', interval: 120, speed: 1.5 }; // ~8 Gegnerschüsse
-    const ring = [...Array(24 * 8 + 1)].map((_, i) => ({ x: Math.round(64 + 56 * Math.cos(Math.PI * i / 12)), y: Math.round(88 + 56 * Math.sin(Math.PI * i / 12)) }));
-    p.formations = [{ id: 'ring', name: 'Ring', enemyTypeId: 'e-1', speed: 3, mode: 'chain', count: 12, spacing: 10, offsets: [], points: ring }];
-    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'ring' }];
-    p.levels[0].speed = 0;
-    return p;
-  };
-  // Benchmark (3): 4 schießende Gegner vor dichtem Hintergrund (Demo-Level 1, mit Musik), Laser
-  const bench3 = () => {
-    const p = laser(createDemoProject());
-    p.levels = [p.levels[0]];
-    p.formations.push({ id: 'q4', name: 'Vier', enemyTypeId: 'e-bug', speed: 0.8, mode: 'chain', count: 4, spacing: 24, offsets: [], points: [{ x: 264, y: 50 }, { x: 160, y: 90 }, { x: 200, y: 140 }, { x: -40, y: 100 }] });
-    p.enemyTypes[1].shot = { ...p.enemyTypes[1].shot, interval: 40 };
-    p.levels[0].events = [...Array(4)].map((_, i) => ({ pos: i * 60, type: 'spawn' as const, formationId: 'q4' }));
-    return p;
-  };
-
   it('Budget: Stufen grün/gelb/rot und Formel', () => {
     expect([54_000, 54_001, 110_000, 110_001].map(budgetLevel)).toEqual(['green', 'yellow', 'yellow', 'red']);
     expect(frameCost({ enemies: 0, enemyShots: 0, playerShots: 0, extraSprites: 0, volleys: 0 })).toBe(COST.BASIS);
@@ -845,17 +855,24 @@ describe('Gegnerschüsse', () => {
       ['Demo-Level 1 mit Musik', demo1, 600, 0, roam],
       ['(1) Kette 4 + 3 Schiffe, Laser', bench1, 330, 30, wiggle],
       ['(2) Ring 12, gezielt', bench2, 400, 150, () => 0],
+      ['(2b) Ring 16 (E1)', ring16, 400, 150, () => 0],
+      ['(4) Fächer Stufe 2 gegen Kette + Block (E1)', fanScene, 330, 30, wiggle],
       ['(3) 4 Gegner vor Demo-Hintergrund, Laser', bench3, 450, 30, wiggle],
     ];
     const report: string[] = [];
     for (const [name, mk, frames, from, move] of scenes) {
-      const rows = loadOf(mk(), frames, from, move);
+      const p = mk();
+      const rows = loadOf(p, frames, from, move);
       const worst = Math.max(...rows.map((x) => x.busy / frameCost(x.l)));
       const top = rows.reduce((a, x) => (x.busy > a.busy ? x : a));
-      report.push(`${name}: max Ist/Modell ${worst.toFixed(3)}, Spitze ${top.busy} (${budgetLevel(top.busy)}) bei ${JSON.stringify(top.l)}, Modell ${frameCost(top.l)} (${budgetLevel(frameCost(top.l))})`);
+      // Lint-Schätzung (upgradeBudget, ohne Messung) liegt über jeder gemessenen Spitze
+      const lint = upgradeBudget(p, p.levels[0]);
+      report.push(`${name}: max Ist/Modell ${worst.toFixed(3)}, Spitze ${top.busy} (${budgetLevel(top.busy)}) bei ${JSON.stringify(top.l)}, Modell ${frameCost(top.l)} (${budgetLevel(frameCost(top.l))}), Lint ${lint.cost} (${lint.level})`);
       expect(rows.length).toBeGreaterThan(frames / 2 - from);
       expect([name, worst <= 1]).toEqual([name, true]);
       expect([name, budgetLevel(top.busy)]).not.toEqual([name, 'red']);
+      expect([name, lint.cost >= top.busy]).toEqual([name, true]);
+      if (name.includes('Ring 16')) expect([top.l.enemies, lint.level]).toEqual([16, 'yellow']);
     }
     if (process.env.PROFILE) console.log(report.join('\n'));
   });
@@ -917,9 +934,219 @@ describe('Gegnerschüsse', () => {
     const p = createDemoProject();
     const bug = p.enemyTypes[1];
     const warn = { severity: 'warn', msg: `Gegnertyp „${bug.name}“: Schuss sieht aus wie der Spielerschuss – eigenes Sprite wählen`, ref: { tab: 'objects', id: bug.id } };
-    bug.shot.spriteId = p.player.shotSpriteId;
+    bug.shot.spriteId = p.weapons[0].spriteId;
     expect(lintProject(p)).toContainEqual(warn);
     bug.shot.pattern = 'none';
     expect(lintProject(p)).not.toContainEqual(warn);
+  });
+});
+
+describe('Waffen (E1)', () => {
+  type P = ReturnType<typeof createDemoProject>;
+  const S = ENGINE_SYMBOLS;
+  const at = (a: number) => a - 0xc000;
+  const s16 = (lo: number, hi: number) => ((lo | (hi << 8)) << 16) >> 16;
+  const shots = (sms: SMS) => [...Array(S.MAXPS)].map((_, i) => at(S.shots) + i * 16).filter((a) => sms.ram[a]);
+  const vel = (sms: SMS, a: number) => [s16(sms.ram[a + S.B_VX], sms.ram[a + S.B_VX + 1]), s16(sms.ram[a + S.B_VY], sms.ram[a + S.B_VY + 1])];
+  const arm = (p: P, w: Weapon) => { p.weapons.push(w); p.player.weaponId = w.id; return p; };
+  const single = (st: Partial<Weapon['levels'][number]>, pierce = false): Weapon =>
+    ({ id: 'w-t', name: 'Test', spriteId: 'shot', speed: 6, pierce, levels: [{ fireRate: 40, damage: 1, emitters: [{ ahead: 8, side: 0, dir: 0 }], ...st }] });
+  // Gegner (Typ e-1) stehen fast still auf Spielerhöhe (Mitte y = 96) bei den x-Mitten xs
+  const lane = (p: P, xs: number[], hp: number) => {
+    p.enemyTypes[0].hp = hp;
+    Object.assign(p.formations[0], { mode: 'block', count: xs.length, offsets: xs.map((x) => ({ x: x - xs[0], y: 0 })), points: [{ x: xs[0], y: 96 }, { x: xs[0] + 12, y: 96 }], speed: 0.05 });
+    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: p.formations[0].id }];
+    return p;
+  };
+  const run = (p: P, frames: number, buttons: (g: number) => number, each?: (sms: SMS, g: number) => void) => {
+    const sms = new SMS(buildRom(engineBinary(), p).rom);
+    let g = 0;
+    sms.onHalt = () => { g++; each?.(sms, g); sms.buttons = buttons(g); };
+    for (let f = 0; f < frames; f++) sms.runFrame();
+    return sms;
+  };
+
+  it.each(['h', 'v'] as const)('altes Projekt (%s) schießt nach der Migration wie früher: Start am alten Versatz, gleiches Tempo', (o) => {
+    const old = JSON.parse(JSON.stringify(createTemplateProject(o)));
+    delete old.weapons; delete old.upgrades; delete old.player.weaponId;
+    const off = o === 'h' ? { x: 12, y: 0 } : { x: 4, y: -12 };
+    Object.assign(old.player, { shotSpriteId: 'shot', shotSpeed: 6, shotHitbox: { x: 0, y: 5, w: 8, h: 6 }, fireRate: 8, shotOffset: off });
+    expect(validateProject(old)).toBe('Spielerdefinition fehlt');
+    const p = upgradeProject(old) as P;
+    expect(validateProject(p)).toBeNull();
+    expect(p.upgrades).toEqual({ style: 'off' });
+    expect(p.weapons[0]).toMatchObject({ name: 'Standard', speed: 6, pierce: false, hitbox: { x: 0, y: 5, w: 8, h: 6 }, levels: [{ fireRate: 8, damage: 1, emitters: [{ ahead: o === 'h' ? 8 : 12, side: 0, dir: 0 }] }] });
+    const seen: number[][] = [];
+    run(p, 40, () => BTN.b1, (sms) => {
+      const a = shots(sms).find((x) => x === at(S.shots));
+      if (a !== undefined && seen.length < 2) seen.push([sms.ram[a + S.O_X], sms.ram[a + S.O_Y], ...vel(sms, a), sms.ram[at(S.player) + S.O_X], sms.ram[at(S.player) + S.O_Y]]);
+    });
+    const [[x, y, vx, vy, px, py], [x2, y2]] = seen;
+    expect([vx, vy]).toEqual(o === 'h' ? [1536, 0] : [0, -1536]);
+    // im Bild des Abschusses schon einmal bewegt
+    expect([x - vx / 256, y - vy / 256]).toEqual([px + off.x, py + off.y]);
+    expect([x2 - x, y2 - y]).toEqual(o === 'h' ? [6, 0] : [0, -6]);
+  });
+
+  it.each(['h', 'v'] as const)('Fächer Stufe 2 (%s): eine Salve = 5 Schüsse, Richtungen 14, 15, 0, 1, 2 zur Flugrichtung', (o) => {
+    const p = createTemplateProject(o);
+    const w = weaponPreset('Fächer', 'w-fan', 'shot');
+    w.levels = [w.levels[1]];
+    let got: number[][] = [];
+    run(arm(p, w), 30, () => BTN.b1, (sms) => { if (!got.length && sms.ram[at(S.shotCount)]) got = shots(sms).map((a) => vel(sms, a)); });
+    expect(got).toEqual([14, 15, 0, 1, 2].map((d) => shotVelocity(5, o === 'h' ? d : (d + 12) & 15)));
+  });
+
+  // Verlauf (HP, Zustand) des Gegners in Slot 0, bis er explodiert
+  const hits = (hp: number, damage: number) => {
+    const p = arm(lane(createTemplateProject('h'), [200], hp), single({ damage }));
+    const log: [number, number][] = [];
+    run(p, 400, () => BTN.b1, (sms) => {
+      const e = at(S.enemies), cur: [number, number] = [sms.ram[e + S.O_HP], sms.ram[e]];
+      if (cur[1] && (!log.length || log[log.length - 1][0] !== cur[0]) && log[log.length - 1]?.[1] !== 3) log.push(cur);
+    });
+    return log;
+  };
+  it('Schaden 2 bei HP 5: Abschuss beim 3. Treffer; HP 1 mit Schaden 3: Abschuss ohne Unterlauf', () => {
+    expect(hits(5, 2)).toEqual([[5, 2], [3, 2], [1, 2], [0, 3]]);
+    expect(hits(1, 3)).toEqual([[1, 2], [0, 3]]);
+  });
+
+  it.each([[true, [9, 9]], [false, [9, 10]]] as const)('Durchschlag=%s: ein Schuss gegen 2 Gegner hintereinander → HP danach %j', (pierce, want) => {
+    const p = arm(lane(createTemplateProject('h'), [140, 190], 10), single({ fireRate: 255 }, pierce));
+    const sms = run(p, 130, (g) => (g === 60 ? BTN.b1 : 0)); // genau ein Schuss
+    expect([0, 1].map((i) => sms.ram[at(S.enemies) + i * 16 + S.O_HP])).toEqual(want);
+  });
+
+  it('Durchschlag: zwei überlappende Gegner, langsamer Schuss → jeder genau einmal getroffen (Treffermaske)', () => {
+    const p = arm(lane(createTemplateProject('h'), [190, 196], 10), { ...single({ fireRate: 255 }, true), speed: 1 });
+    const sms = run(p, 300, (g) => (g === 60 ? BTN.b1 : 0));
+    expect([0, 1].map((i) => sms.ram[at(S.enemies) + i * 16 + S.O_HP])).toEqual([9, 9]);
+  });
+
+  it('Durchschlag: neuer Gegner im Slot eines getroffenen ist wieder treffbar', () => {
+    const p = createTemplateProject('h');
+    const sit = (id: string, x: number, hp: number) => ({ id, name: id, enemyTypeId: id === 'a' ? 'e-1' : 'e-2', speed: 0.05, mode: 'chain' as const, count: 1, spacing: 1, offsets: [], points: [{ x, y: 96 }, { x: x + 12, y: 96 }] });
+    p.enemyTypes.push({ ...p.enemyTypes[0], id: 'e-2', name: 'Zäh', hp: 10 });
+    p.enemyTypes[0].hp = 1;
+    p.formations = [sit('a', 100, 1), sit('b', 230, 10)];
+    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'a' }, { pos: 75, type: 'spawn', formationId: 'b' }]; // b kommt in Slot 0, nachdem a explodiert ist
+    arm(p, { ...single({ fireRate: 255 }, true), speed: 1 });
+    let reused = false;
+    const sms = run(p, 400, (g) => (g === 60 ? BTN.b1 : 0), (m) => { if (m.ram[at(S.enemies) + S.O_TYPE] === 1 && m.ram[at(S.enemies)] === 2) reused = true; });
+    expect(reused).toBe(true);
+    expect(sms.ram[at(S.enemies) + S.O_HP]).toBe(9);
+  });
+
+  it('Import: Stufe ohne Austritte und Tempo 0 werden abgelehnt; die Engine feuert bei 0 Austritten nicht', () => {
+    const p = createTemplateProject('h');
+    p.weapons[0].levels[0].emitters = [];
+    expect(validateProject(JSON.parse(JSON.stringify(p)))).toBe('Ungültige Waffe');
+    const sms = run(p, 60, () => BTN.b1);
+    expect(sms.ram[at(S.shotCount)]).toBe(0);
+    const q = createTemplateProject('h');
+    q.weapons[0].speed = 0;
+    expect(validateProject(JSON.parse(JSON.stringify(q)))).toBe('Ungültige Waffe');
+  });
+
+  it('Dauerfeuer mit 5er-Fächer: shotCount = aktive Schüsse, höchstens 10', () => {
+    const p = createTemplateProject('h');
+    const w = weaponPreset('Fächer', 'w-fan', 'shot');
+    w.levels = [{ ...w.levels[2], fireRate: 1 }];
+    let max = 0;
+    run(arm(p, w), 120, () => BTN.b1, (sms) => {
+      const n = sms.ram[at(S.shotCount)];
+      expect(n).toBe(shots(sms).length);
+      max = Math.max(max, n);
+    });
+    expect(max).toBe(S.MAXPS);
+  });
+
+  it('16 Gegner gleichzeitig (Ring): laufen, nie mehr als halbes Tempo', () => {
+    const p = createTemplateProject('h');
+    const ring = [...Array(24 * 4 + 1)].map((_, i) => ({ x: Math.round(128 + 56 * Math.cos(Math.PI * i / 12)), y: Math.round(96 + 56 * Math.sin(Math.PI * i / 12)) }));
+    p.formations = [{ id: 'ring', name: 'Ring', enemyTypeId: 'e-1', speed: 3, mode: 'chain', count: 16, spacing: 7, offsets: [], points: ring }];
+    p.enemyTypes[0].hp = 50;
+    p.levels[0].events = [{ pos: 0, type: 'spawn', formationId: 'ring' }];
+    let max = 0, games = 0;
+    const sms = new SMS(buildRom(engineBinary(), p, { invincible: true }).rom);
+    sms.onHalt = () => { games++; sms.buttons = BTN.b1; max = Math.max(max, [...Array(S.MAXE)].filter((_, i) => sms.ram[at(S.enemies) + i * 16] === 2).length); };
+    for (let f = 0; f < 400; f++) sms.runFrame();
+    expect(max).toBe(16);
+    expect(sms.maxBusy).toBeLessThanOrEqual(BUDGET_YELLOW);
+    expect(games).toBeGreaterThan(200); // höchstens halbes Tempo
+    expect(upgradeBudget(p, p.levels[0]).level).toBe('yellow');
+  });
+
+  it('Compiler: Version 4, Upgrade-Block über Global 06, Waffenstufe wie Schussdefinition plus Austritte H und V', () => {
+    const p = createTemplateProject('h');
+    const w = arm(p, weaponPreset('Fächer', 'w-fan', 'shot')).weapons[1];
+    const g = compileProject(p).global;
+    const word = (a: number) => g[a] | (g[a + 1] << 8);
+    expect(g[4]).toBe(4);
+    const u = word(6) - 0x8000;
+    expect([...g.slice(u, u + 4)]).toEqual([0, 0, 1, 2]); // Stil aus, Flags, Startwaffe 1, 2 Waffen
+    const wp = word(word(u + 4) - 0x8000 + 2) - 0x8000; // Waffe 1
+    expect(g[wp]).toBe(3);
+    const lv = word(wp + 3) - 0x8000; // Stufe 2
+    expect([g[lv], g[lv + 1], g[lv + 8], g[lv + 9]]).toEqual([1, 0, w.levels[1].fireRate, 5]);
+    expect([...g.slice(lv + 4, lv + 8)]).toEqual([0, 7, 8, 2]); // Hitbox = sichtbare Pixel des Schuss-Sprites
+    const em = (o: number, i: number) => { const a = lv + 10 + o * 30 + i * 6; return [s16(g[a + 2], g[a + 3]), s16(g[a + 4], g[a + 5])]; };
+    expect([0, 1, 2, 3, 4].map((i) => em(0, i))).toEqual([14, 15, 0, 1, 2].map((d) => shotVelocity(5, d)));
+    expect([0, 1, 2, 3, 4].map((i) => em(1, i))).toEqual([10, 11, 12, 13, 14].map((d) => shotVelocity(5, d)));
+  });
+
+  it('Lint: Salve > 10, tote Waffenverweise, fehlendes Waffen-Sprite; Waffen-Sprite gilt als verwendet', () => {
+    const p = createDemoProject();
+    const w = arm(p, weaponPreset('Fächer', 'w-fan', 'shot')).weapons[1];
+    expect(spriteUsers(p, 'shot').map((u) => u.label)).toEqual(['Waffe „Standard“', 'Waffe „Fächer“']);
+    expect(weaponUsers(p, w.id)).toEqual([{ label: 'Spieler (Startwaffe)', ref: { tab: 'objects' } }]);
+    w.levels[2].emitters = [...Array(11)].map((_, i) => ({ ahead: 8, side: i - 5, dir: 0 }));
+    w.spriteId = 'weg';
+    const d = lintProject(p);
+    const ref = { tab: 'upgrades', id: w.id };
+    expect(d).toContainEqual({ severity: 'error', msg: 'Waffe „Fächer“, Stufe 3: Salve aus 11 Schüssen, höchstens 10 – Austritte entfernen', ref });
+    expect(d).toContainEqual({ severity: 'error', msg: 'Waffe „Fächer“: Sprite fehlt – neu wählen', ref });
+    p.player.weaponId = 'weg';
+    expect(lintProject(p)).toContainEqual({ severity: 'error', msg: 'Spieler: Startwaffe fehlt – neu wählen', ref: { tab: 'objects' } });
+  });
+
+  it('Lint: Rechenzeit – Sperre erst über PLAN.BLOCK, „stark“ über 110 000, „kurz“ über einem Bild, lange Strecken eigene Warnung; Rat nach Ursache', () => {
+    const ringP = (pattern: EnemyShot['pattern'], laps: number) => {
+      const p = createTemplateProject('h');
+      const ring = [...Array(24 * laps + 1)].map((_, i) => ({ x: Math.round(128 + 56 * Math.cos(Math.PI * i / 12)), y: Math.round(96 + 56 * Math.sin(Math.PI * i / 12)) }));
+      p.formations = [{ id: 'ring', name: 'Ring', enemyTypeId: 'e-1', speed: 3, mode: 'chain', count: 16, spacing: 7, offsets: [], points: ring }];
+      p.enemyTypes[0].shot = { ...p.enemyTypes[0].shot, pattern, interval: 60 };
+      p.enemyTypes[0].hp = 50; // zäh: die Planungsschätzung rechnet sonst mit Abschüssen
+      p.levels[0].events = [{ pos: 20, type: 'spawn', formationId: 'ring' }];
+      return p;
+    };
+    // senkrechte Wand aus 16 Fächer-Schützen: alle feuern im selben Bild
+    const wallP = () => {
+      const p = createTemplateProject('h');
+      p.enemyTypes[0].hp = 50;
+      p.enemyTypes[0].shot = { ...p.enemyTypes[0].shot, pattern: 'fan3', interval: 30 };
+      p.formations = [{ id: 'w', name: 'Wand', enemyTypeId: 'e-1', speed: 0.5, mode: 'block', count: 16, spacing: 0, offsets: [...Array(16)].map((_, i) => ({ x: 0, y: i * 12 - 90 })), points: [{ x: 264, y: 96 }, { x: -40, y: 96 }] }];
+      p.levels[0].events = [{ pos: 20, type: 'spawn', formationId: 'w' }];
+      return p;
+    };
+    const budgetMsgs = (p: P) => lintProject(p).filter((x) => /Rechenzeit|verlangsam/.test(x.msg));
+    const ev = { tab: 'levels', id: 'lvl-1', events: true, pos: 20 };
+    expect(budgetMsgs(wallP())[0]).toEqual({ severity: 'error', msg: 'Level „Level 1“: bei 20 px zu viel Rechenzeit, das Spiel kann bis auf ein Drittel Tempo fallen – Gegner seltener schießen lassen (längere Feuerpause) oder weniger Schützen', ref: ev });
+    expect(budgetMsgs(ringP('aimed', 2))).toEqual([{ severity: 'warn', msg: 'Level „Level 1“: kann bei 20 px stark verlangsamen (bis Drittel-Tempo) – Gegnerwellen entzerren oder „Warten“ einfügen', ref: ev }]);
+    expect(budgetMsgs(ringP('none', 2))).toEqual([{ severity: 'warn', msg: 'Level „Level 1“: kann bei 20 px kurz verlangsamen – nur ändern, wenn es stört: Gegnerwellen entzerren oder „Warten“ einfügen', ref: ev }]);
+    const long = budgetMsgs(ringP('none', 8));
+    expect(long).toHaveLength(2);
+    expect(long[1]).toMatchObject({ severity: 'warn', msg: expect.stringMatching(/^Level „Level 1“: kann ab 20 px rund \d+ s am Stück verlangsamen/), ref: ev });
+    // höhere Stufe der Startwaffe rot: nur Warnung, Sprung öffnet die Stufe
+    const p = ringP('aimed', 2);
+    p.sprites.push({ id: 'big', name: 'Breit', width: 32, height: 16, frames: [new Array(512).fill(6)], frameDelay: 8 });
+    const w = weaponPreset('Fächer', 'w-fan', 'big');
+    w.levels = [w.levels[0], { ...w.levels[2], fireRate: 1, emitters: [...Array(10)].map((_, i) => ({ ahead: 8, side: i - 5, dir: (i + 12) & 15 })) }];
+    arm(p, w);
+    const high = lintProject(p).find((d) => d.msg.startsWith('Waffe „Fächer“, Stufe 2'));
+    expect(high).toMatchObject({ severity: 'warn', ref: { tab: 'upgrades', id: 'w-fan', stage: 1 } });
+    // Modell: grün bis 54 000
+    expect(upgradeBudget(createTemplateProject('h'), createTemplateProject('h').levels[0]).cost).toBeLessThanOrEqual(BUDGET_GREEN);
   });
 });

@@ -1,5 +1,5 @@
 // Mitgeliefertes Beispielprojekt (prozedural erzeugte Grafik)
-import { ACROSS, type EnemyShot, type Formation, type Level, type LevelEvent, type Metatile, type Orientation, type Project, type Sfx, type Song, type SpriteGfx, type TileRef } from './types';
+import { ACROSS, type EnemyShot, type Emitter, type Formation, type Hitbox, type Level, type LevelEvent, type Metatile, type Orientation, type Point, type Project, type Sfx, type Song, type SpriteGfx, type TileRef, type Weapon, type WeaponLevel } from './types';
 
 type Px = number[];
 const img = (w: number, h: number, f: (x: number, y: number) => number): Px => {
@@ -232,6 +232,45 @@ function sfx(): Sfx[] {
 /** Schießt nicht; Sprite und Werte sind Vorgaben, falls man ein Muster wählt */
 export const noShot = (spriteId: string): EnemyShot => ({ pattern: 'none', interval: 60, spriteId, speed: 1.5 });
 
+/** Schussfelder des Spielers vor den Waffen (E1) */
+interface LegacyShot { shotSpriteId: string; shotSpeed: number; shotHitbox: Hitbox; fireRate: number; shotOffset: Point }
+
+/**
+ * Alter Spielerschuss → Waffe „Standard“ mit einer Stufe, die genauso schießt.
+ * shortcut: shotOffset war in Bildschirmrichtung; umgerechnet wird mit der Ausrichtung des ersten Levels (o) – Level der anderen Ausrichtung schießen danach gedreht; genauer erst, wenn gemischte Projekte das brauchen.
+ */
+function legacyWeapon(s: LegacyShot, o: Orientation, ship?: SpriteGfx, shot?: SpriteGfx): Weapon {
+  const [pw, ph, sw, sh] = [ship?.width ?? 16, ship?.height ?? 16, shot?.width ?? 8, shot?.height ?? 16];
+  const off = s.shotOffset ?? { x: 0, y: 0 };
+  const cx = off.x + (sw >> 1) - (pw >> 1), cy = off.y + (sh >> 1) - (ph >> 1); // Schussmitte − Schiffsmitte
+  const emit: Emitter = o === 'h' ? { ahead: cx, side: cy, dir: 0 } : { ahead: -cy || 0, side: cx, dir: 0 };
+  return {
+    id: 'w-standard', name: 'Standard', spriteId: s.shotSpriteId, speed: s.shotSpeed, pierce: false, hitbox: s.shotHitbox,
+    levels: [{ fireRate: s.fireRate, damage: 1, emitters: [emit] }],
+  };
+}
+
+export const WEAPON_PRESETS = ['Einzel', 'Doppel', 'Fächer', 'Laser', 'Rakete', 'Heck'] as const;
+export type WeaponPreset = (typeof WEAPON_PRESETS)[number];
+
+/**
+ * Fertige Waffe mit drei Stufen. Austritte: [vorn, seitlich, Richtung].
+ * shortcut: Schuss-Sprites werden nicht gedreht (schräge Schüsse sehen aus wie gerade); Raketen folgen nicht dem Boden – beides erst, wenn Nutzer es vermissen.
+ */
+export function weaponPreset(kind: WeaponPreset, id: string, spriteId: string): Weapon {
+  const st = (fireRate: number, damage: number, e: [number, number, number][]): WeaponLevel =>
+    ({ fireRate, damage, emitters: e.map(([ahead, side, dir]) => ({ ahead, side, dir })) });
+  const W = (speed: number, pierce: boolean, levels: WeaponLevel[]): Weapon => ({ id, name: kind, spriteId, speed, pierce, levels });
+  switch (kind) {
+    case 'Einzel': return W(6, false, [st(8, 1, [[8, 0, 0]]), st(6, 1, [[8, 0, 0]]), st(6, 2, [[8, 0, 0]])]);
+    case 'Doppel': return W(6, false, [st(8, 1, [[8, -4, 0], [8, 4, 0]]), st(6, 1, [[8, -5, 0], [8, 5, 0]]), st(6, 2, [[8, -5, 0], [8, 5, 0]])]);
+    case 'Fächer': return W(5, false, [st(10, 1, [[8, 0, 15], [8, 0, 0], [8, 0, 1]]), st(10, 1, [[8, 0, 14], [8, 0, 15], [8, 0, 0], [8, 0, 1], [8, 0, 2]]), st(8, 1, [[8, 0, 14], [8, 0, 15], [8, 0, 0], [8, 0, 1], [8, 0, 2]])]);
+    case 'Laser': return W(8, true, [st(12, 1, [[8, 0, 0]]), st(10, 2, [[8, 0, 0]]), st(8, 2, [[8, -4, 0], [8, 4, 0]])]);
+    case 'Rakete': return W(3, false, [st(20, 3, [[4, 0, 0]]), st(20, 3, [[4, -6, 0], [4, 6, 0]]), st(16, 4, [[4, -6, 0], [4, 6, 0]])]);
+    case 'Heck': return W(6, false, [st(10, 1, [[8, 0, 0], [-8, 0, 8]]), st(10, 1, [[8, 0, 0], [-8, -4, 9], [-8, 4, 7]]), st(8, 1, [[8, 0, 0], [-8, -4, 9], [-8, 0, 8], [-8, 4, 7]])]);
+  }
+}
+
 /** Ergänzt Sound-Felder in Projekten, die vor dem Sound-Editor gespeichert wurden. */
 export function upgradeProject(p: unknown): unknown {
   let o = p as (Omit<Partial<Project>, 'formatVersion'> & { tiles?: number[][]; formatVersion?: number }) | null;
@@ -250,28 +289,40 @@ export function upgradeProject(p: unknown): unknown {
   // Gegnertypen ohne Schuss stammen aus der Zeit vor den Gegnerschüssen
   const shotless = (t: unknown) => !!t && typeof t === 'object' && !('shot' in t);
   if (Array.isArray(o.enemyTypes) && o.enemyTypes.some(shotless)) {
-    const shot = noShot(o.player?.shotSpriteId ?? '');
+    const shot = noShot((o.player as Partial<LegacyShot> | undefined)?.shotSpriteId ?? o.weapons?.find((w) => w.id === o!.player?.weaponId)?.spriteId ?? '');
     o = { ...o, enemyTypes: o.enemyTypes.map((t) => (shotless(t) ? { ...t, shot: { ...shot } } : t)) };
   }
   // Ereignisse ohne Typ stammen aus der Zeit vor den Ereignistypen: alle ließen eine Formation erscheinen
   const untyped = (e: unknown) => !!e && typeof e === 'object' && !('type' in e);
   if (Array.isArray(o.levels) && o.levels.some((l) => Array.isArray(l?.events) && l.events.some(untyped)))
     o = { ...o, levels: o.levels.map((l) => (Array.isArray(l?.events) ? { ...l, events: l.events.map((e) => (untyped(e) ? { ...e, type: 'spawn' as const } : e)) } : l)) };
+  // Vor den Waffen (E1): Schussfelder am Spieler → Waffe „Standard“ mit einer Stufe, Upgrades aus
+  if (o.player && typeof o.player === 'object' && !Array.isArray(o.weapons)) {
+    const { shotSpriteId, shotSpeed, shotHitbox, fireRate, shotOffset, ...player } = o.player as Partial<LegacyShot> & Project['player'];
+    const spr = (id: string | undefined) => (Array.isArray(o!.sprites) ? o!.sprites.find((s) => s?.id === id) : undefined);
+    const w = legacyWeapon({ shotSpriteId: shotSpriteId!, shotSpeed: shotSpeed!, shotHitbox: shotHitbox!, fireRate: fireRate!, shotOffset: shotOffset! },
+      Array.isArray(o.levels) && o.levels[0]?.orientation === 'v' ? 'v' : 'h', spr(player.spriteId), spr(shotSpriteId));
+    o = { ...o, player: { ...player, weaponId: w.id }, weapons: [w] };
+  }
+  if (!o.upgrades) o = { ...o, upgrades: { style: 'off' } };
   return o;
 }
 
+const DEMO_SHOT: LegacyShot = { shotSpriteId: 'shot', shotSpeed: 6, shotHitbox: { x: 0, y: 5, w: 8, h: 6 }, fireRate: 8, shotOffset: { x: 12, y: 0 } };
+
 export function createDemoProject(): Project {
+  const spr = sprites();
   return {
     formatVersion: 2,
     name: 'Demo: Sternenpatrouille',
     palettes: { bg: BG, sprite: SPR },
     metatiles: metatiles(),
-    sprites: sprites(),
+    sprites: spr,
     explosionSpriteId: 'boom',
-    player: {
-      spriteId: 'ship', speed: 2, hitbox: { x: 4, y: 5, w: 8, h: 6 }, lives: 3,
-      shotSpriteId: 'shot', shotSpeed: 6, shotHitbox: { x: 0, y: 5, w: 8, h: 6 }, fireRate: 8, shotOffset: { x: 12, y: 0 },
-    },
+    player: { spriteId: 'ship', speed: 2, hitbox: { x: 4, y: 5, w: 8, h: 6 }, lives: 3, weaponId: 'w-standard' },
+    // Werte wie der Spielerschuss vor E1: 8 px vor der Schiffsmitte, 6 px/Frame, alle 8 Frames
+    weapons: [legacyWeapon(DEMO_SHOT, 'h', spr[0], spr[1])],
+    upgrades: { style: 'off' },
     enemyTypes: [
       { id: 'e-drone', name: 'Drohne', spriteId: 'drone', hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot('orb') },
       { id: 'e-bug', name: 'Käfer', spriteId: 'bug', hp: 2, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 20, shot: { pattern: 'aimed', interval: 90, spriteId: 'orb', speed: 1.5 } },
@@ -307,7 +358,8 @@ export function createTemplateProject(o: Orientation): Project {
       sprite('enemy', 'Gegner', 16, 16, [enemy]),
       demo.sprites.find((s) => s.id === 'boom')!,
     ],
-    player: H ? demo.player : { ...demo.player, shotOffset: { x: 4, y: -12 }, shotHitbox: { x: 2, y: 4, w: 4, h: 8 } },
+    // vertikal: Schuss mittig über dem Schiff, schmale Hitbox
+    weapons: H ? demo.weapons : [legacyWeapon({ ...DEMO_SHOT, shotOffset: { x: 4, y: -12 }, shotHitbox: { x: 2, y: 4, w: 4, h: 8 } }, 'v', demo.sprites[0], demo.sprites[1])],
     enemyTypes: [{ id: 'e-1', name: 'Gegner', spriteId: 'enemy', hp: 1, hitbox: { x: 2, y: 2, w: 12, h: 12 }, score: 10, shot: noShot('shot') }],
     formations: [{
       id: 'f-1', name: 'Kette', enemyTypeId: 'e-1', speed: 1.5, mode: 'chain', count: 5, spacing: 14, offsets: [],

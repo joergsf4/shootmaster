@@ -4,7 +4,7 @@ export * from './path';
 export * from './compile';
 export * from './rom';
 export * from './sound';
-export { createDemoProject, createTemplateProject, noShot, upgradeProject } from './demo';
+export { createDemoProject, createTemplateProject, noShot, upgradeProject, weaponPreset, WEAPON_PRESETS, type WeaponPreset } from './demo';
 export * from './validate';
 export * from './budget';
 export { ENGINE_BASE64, ENGINE_SYMBOLS } from './generated/engine';

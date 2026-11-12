@@ -1,4 +1,4 @@
-import type { Formation, Point } from './types';
+import { MAX_ENEMIES, type Formation, type Point } from './types';
 
 /** Catmull-Rom-Spline durch die Punkte, dicht abgetastet. */
 export function sampleSpline(points: Point[], stepsPerSeg = 24): Point[] {
@@ -63,7 +63,7 @@ export interface MemberSpec { delay: number; dx: number; dy: number }
 
 /** Mitglieder einer Formation (Verzögerung + Versatz). */
 export function formationMembers(f: Formation): MemberSpec[] {
-  const n = Math.max(1, Math.min(12, f.count));
+  const n = Math.max(1, Math.min(MAX_ENEMIES, f.count));
   const out: MemberSpec[] = [];
   for (let i = 0; i < n; i++) {
     if (f.mode === 'chain') out.push({ delay: Math.min(255, i * f.spacing), dx: 0, dy: 0 });

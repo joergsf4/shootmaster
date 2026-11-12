@@ -1,5 +1,5 @@
 ; =====================================================================
-;  SMS Shoot 'em Up Engine  –  Datenformat v1 (docs/data-format.md)
+;  SMS Shoot 'em Up Engine  –  Datenformat v4 (docs/data-format.md)
 ;  Bank 0 (Slot 0): diese Engine
 ;  Bank 1 (Slot 2, $8000): globale Daten
 ;  Bank n (Slot 1, $4000): Level-Daten / BG-Tiles
@@ -12,14 +12,15 @@ PSG         equ $7F
 MAPPER1     equ $FFFE
 MAPPER2     equ $FFFF
 
-MAXE        equ 12
-MAXS        equ 6
+MAXE        equ 16         ; Gegner (16 × 16 Byte = eine Seite; buildSat rotiert über das Low-Byte, MAXE muss 16 bleiben)
+MAXPS       equ 10         ; Spielerschüsse (Pool und größte Salve)
 MAXB        equ 16         ; Gegnerschüsse (Zweierpotenz: Rotation per and)
 OBJ         equ 16
 
 ; ---- globale Daten (Slot 2) ----
 G_VERSION   equ $8004
 G_LEVELS    equ $8005
+G_UPGRADE   equ $8006      ; → Upgrade-Block
 G_SPRPAL    equ $8008
 G_SPRCOUNT  equ $8018
 G_SPRPTR    equ $801A
@@ -46,17 +47,19 @@ P_MINX      equ 5
 P_MAXX      equ 6
 P_MINY      equ 7
 P_MAXY      equ 8
-P_ANIM      equ 9
-P_SANIM     equ 11
-P_SSPEED    equ 13
-P_SHBX      equ 14
-P_SHBY      equ 15
-P_SHBW      equ 16
-P_SHBH      equ 17
-P_RATE      equ 18
-P_SOFFX     equ 19
-P_SOFFY     equ 20
+P_ANIM      equ 9          ; 11–20 reserviert (bis v3 der Schuss)
 P_LIVES     equ 21
+
+; ---- Upgrade-Block (32 Byte) ----
+U_START     equ 2          ; Index der Startwaffe
+U_WEAPONS   equ 4          ; → Tabelle: Zeiger je Waffe → (Anzahl Stufen, Zeiger je Stufe)
+
+; ---- Waffenstufe; Byte 2–7 wie die Schussdefinition (S_ANIM, S_HBX..S_HBH) ----
+W_DAMAGE    equ 0
+W_FLAGS     equ 1          ; Bit 0: Durchschlag
+W_RATE      equ 8          ; Frames zwischen Salven
+W_NEMIT     equ 9          ; Austritte je Salve
+W_EMIT      equ 10         ; W_NEMIT × (dx, dy, vx16, vy16) horizontal, danach dieselben vertikal
 
 ; ---- Gegnertyp (16 Byte) ----
 T_HP        equ 0
@@ -171,6 +174,7 @@ curSong     equ $C03A      ; aktueller Song ($FF = Stille)
 ckSpeed     equ $C03B      ; Checkpoint: Tempo, Song, Ereigniszeiger (0 = keiner), Kamera
 ckSong      equ $C03C
 shotCount   equ $C03D      ; aktive Spielerschüsse (0: Schleifen über den Pool entfallen)
+wpnPtr      equ $C03E      ; → aktuelle Waffenstufe
 coKill      equ tmpType    ; collide: höchster explodierter Box-Cache-Eintrag + 1 dieses Bilds (0 = keiner)
 ckEv        equ $C050
 ckCam       equ $C052
@@ -190,12 +194,18 @@ chAtt       equ $C063
 player      equ $C080
 satY        equ $C100
 satXT       equ $C140
+; $C090–$C0CF frei für Satelliten (E3, 4 × 16)
 boxCache    equ $C1C0      ; MAXE × (x, w, y, h): Hitboxen der kollidierbaren Gegner (Zustand 2, auf dem Bildschirm) in Slot-Reihenfolge, von updateEnemies je Bild gefüllt; x = w = 0: in diesem Bild schon getroffen
-boxSlot     equ $C1F0      ; MAXE × Low-Byte des Gegners (Slot × 16) je Eintrag
-boxCount    equ $C1FC      ; Anzahl Einträge
-enemies     equ $C200
-shots       equ $C300
+enemies     equ $C200      ; MAXE × 16 Byte = eine Seite
+shots       equ $C300      ; MAXPS × 16 Byte, Format der Gegnerschüsse (B_DEF → Waffenstufe)
+; $C3A0–$C3DF frei für Kapseln (E2, 4 × 16)
+boxSlot     equ $C3E0      ; MAXE × Low-Byte des Gegners (Slot × 16) je Eintrag
+boxCount    equ $C3F0      ; Anzahl Einträge
 bullets     equ $C400      ; MAXB × 16 Byte = genau eine 256-Byte-Seite (Schleifen laufen über das Low-Byte)
+hitMask     equ $C500      ; MAXPS × 2 Byte: Treffermaske je Spielerschuss (Bit = Gegner-Slot schon getroffen; Durchschlag)
+coMask      equ tmpPtr     ; collide: → Treffermaske des aktuellen Schusses
+coSlot      equ tmpBank    ; collide: Low-Byte des getroffenen Gegners
+; ab $C514 frei (Gruppen, Ringpuffer der Satelliten-Spur); Stapel ab $DFF0 abwärts
 
 ; =====================================================================
     org $0000
@@ -248,7 +258,7 @@ init:
     cp 'S'
     jp nz,fatal
     ld a,(G_VERSION)
-    cp 3
+    cp 4
     jp nz,fatal
     ; VRAM löschen
     ld hl,$0000
@@ -395,7 +405,7 @@ clrNt:
     ld a,b
     or c
     jr nz,clrNt
-    ; Objekte löschen (Gegner, Schüsse, Gegnerschüsse: $C200-$C4FF)
+    ; Objekte löschen (Gegner, Spielerschüsse, Box-Slots, Gegnerschüsse: $C200-$C4FF)
     ld hl,enemies
     ld de,enemies+1
     ld bc,$2FF
@@ -426,6 +436,7 @@ clrNt:
     ld ix,(G_PLAYER)
     ld a,(ix+P_LIVES)
     ld (lives),a
+    call resetUpgrades      ; Spielstart und Game Over: Startwaffe, Stufe 1
 haveLives:
     ; Startbild ab Tile camPos/8 aufbauen (wie nach dem Scrollen dorthin)
     ld a,(orient)
@@ -992,6 +1003,23 @@ sfMember:
     push bc
     call findFreeEnemy
     jr c,sfSkip
+    push hl
+    push ix                 ; neuer Gegner im Slot: alte Treffer der Durchschlag-Schüsse vergessen
+    pop de
+    ld a,e
+    ld hl,hitMask
+    call slotBit
+    cpl
+    ld c,a
+    ld b,MAXPS
+sfMask:
+    ld a,(hl)
+    and c
+    ld (hl),a
+    inc hl
+    inc hl
+    djnz sfMask
+    pop hl
     ld (ix+O_STATE),1
     ld a,(hl)
     ld (ix+O_DELAY),a
@@ -1187,6 +1215,7 @@ upCanFire:
     bit 4,c
     jr z,upAnim
     call fireShot
+    ld iy,(G_PLAYER)        ; fireShot setzt IY auf die Waffenstufe
 upAnim:
     ld ix,player
     ld l,(iy+P_ANIM)
@@ -1194,20 +1223,89 @@ upAnim:
     call animate
     ret
 
+; Startwaffe, Stufe 1 → wpnPtr
+resetUpgrades:
+    ld ix,(G_UPGRADE)
+    ld a,(ix+U_START)
+    add a,a
+    ld e,a
+    ld d,0
+    ld l,(ix+U_WEAPONS)
+    ld h,(ix+U_WEAPONS+1)
+    add hl,de
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a                  ; HL = Waffe (Anzahl Stufen, Zeiger …)
+    inc hl
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    ld (wpnPtr),hl
+    ret
+
+; Salve der aktuellen Waffenstufe: je Austritt ein Schuss, solange der Pool reicht
 fireShot:
+    ld iy,(wpnPtr)
+    ld a,(iy+W_NEMIT)
+    or a
+    ret z                   ; Stufe ohne Austritte (der Editor verhindert sie)
+    ld b,a
+    push iy
+    pop hl
+    ld de,W_EMIT
+    add hl,de
+    ld a,(orient)
+    or a
+    jr z,fsH
+    ld a,b                  ; vertikal: hinter den horizontalen Austritten (× 6 Byte)
+    add a,a
+    add a,b
+    add a,a
+    ld e,a
+    add hl,de
+fsH:
+    ld c,0                  ; erzeugte Schüsse
+fsLoop:
+    push bc
+    push hl
+    call fsOne
+    pop hl
+    pop bc
+    jr c,fsDone             ; Pool voll
+    jr z,fsSkip             ; Start außerhalb des Bildschirms
+    inc c
+fsSkip:
+    ld de,6
+    add hl,de
+    djnz fsLoop
+fsDone:
+    ld a,c
+    or a
+    ret z                   ; kein Schuss: keine Feuerpause, kein Ton (nächstes Bild erneut)
+    ld a,(iy+W_RATE)
+    ld (cooldown),a
+    ld a,(G_SND_SHOT)
+    jp playSfx
+
+; HL = Austritt (dx, dy, vx, vy), IY = Waffenstufe → Carry: kein freier Slot; sonst NZ = Schuss erzeugt, Z = Start außerhalb (wie früher: Versatz mit Vorzeichen, Überlauf → kein Schuss)
+fsOne:
     ld ix,shots
     ld de,OBJ
-    ld b,MAXS
-fsLoop:
+    ld b,MAXPS
+foFind:
     ld a,(ix+O_STATE)
     or a
-    jr z,fsFound
+    jr z,foFound
     add ix,de
-    djnz fsLoop
+    djnz foFind
+    scf
     ret
-fsFound:
-    ; Startposition mit Vorzeichen addieren; außerhalb des Bildschirms → kein Schuss
-    ld a,(iy+P_SOFFX)
+foFound:
+    ld a,(hl)               ; dx
+    inc hl
+    push hl
     call sext
     ld a,(player+O_X)
     ld l,a
@@ -1215,10 +1313,12 @@ fsFound:
     add hl,de
     ld a,h
     or a
-    ret nz
+    jp nz,foOff
     ld (ix+O_X),l
-    ld (ix+O_X+1),h
-    ld a,(iy+P_SOFFY)
+    pop hl
+    ld a,(hl)               ; dy
+    inc hl
+    push hl
     call sext
     ld a,(player+O_Y)
     ld l,a
@@ -1226,65 +1326,106 @@ fsFound:
     add hl,de
     ld a,h
     or a
-    ret nz
+    jp nz,foOff
     ld (ix+O_Y),l
-    ld (ix+O_Y+1),h
+    pop hl
+    ld a,(hl)
+    ld (ix+B_VX),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VX+1),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VY),a
+    inc hl
+    ld a,(hl)
+    ld (ix+B_VY+1),a
+    xor a
+    ld (ix+O_X+1),a
+    ld (ix+O_Y+1),a
+    ld (ix+O_ATICK),a
+    ld (ix+O_AFRAME),a
+    ld a,$80                ; halber Pixel wie bei Gegnerschüssen: ganzzahliges Tempo läuft wie früher pixelgenau
+    ld (ix+B_XF),a
+    ld (ix+B_YF),a
     ld (ix+O_STATE),2
-    ld (ix+O_ATICK),0
-    ld (ix+O_AFRAME),0
-    ; Zeichenzeiger wie bei Gegnerschüssen: B_DEF + S_ANIM → P_SANIM
-    ; shortcut: zeigt mitten in die Spielerdefinition; E1 ersetzt das durch die Waffenstufe
     push iy
     pop hl
-    ld de,P_SANIM-S_ANIM
-    add hl,de
     ld (ix+B_DEF),l
     ld (ix+B_DEF+1),h
+    push ix
+    pop hl
+    call maskOf
+    xor a
+    ld (hl),a               ; noch kein Gegner getroffen
+    inc hl
+    ld (hl),a
     ld hl,shotCount
     inc (hl)
-    ld a,(iy+P_RATE)
-    ld (cooldown),a
-    ld a,(G_SND_SHOT)
-    jp playSfx
+    ret                     ; NZ (shotCount ≥ 1), kein Carry
 
+; L = Low-Byte eines Spielerschusses (Slot × 16) → HL = seine Treffermaske
+maskOf:
+    ld a,l
+    rrca
+    rrca
+    rrca
+    and $1E
+    add a,hitMask&255
+    ld l,a
+    ld h,hitMask/256
+    ret
+
+; A = Low-Byte eines Gegners (Slot × 16), HL = Treffermaske → HL = Maskenbyte, A = Bit des Slots
+slotBit:
+    bit 7,a
+    jr z,sbLo
+    inc hl
+sbLo:
+    rrca
+    rrca
+    rrca
+    rrca
+    and 7
+    push de
+    push hl
+    ld e,a
+    ld d,0
+    ld hl,bitTab
+    add hl,de
+    ld a,(hl)
+    pop hl
+    pop de
+    ret
+bitTab:
+    db 1,2,4,8,16,32,64,128
+foOff:
+    pop hl
+    xor a                   ; Z, kein Carry
+    ret
+
+; Spielerschüsse bewegen wie Gegnerschüsse (8.8, Animation über B_DEF)
 updateShots:
     ld a,(shotCount)
     or a
     ret z
-    ld iy,(G_PLAYER)
-    ld ix,shots
-    ld b,MAXS
+    ld hl,shots
+    ld b,MAXPS
 usLoop:
-    push bc
-    ld a,(ix+O_STATE)
+    ld a,(hl)
     or a
     jr z,usNext
-    ld a,(orient)
-    or a
-    jr nz,usV
-    ld a,(ix+O_X)
-    add a,(iy+P_SSPEED)
-    jr c,usFree
-    ld (ix+O_X),a
-    jr usAnim
-usV:
-    ld a,(ix+O_Y)
-    sub (iy+P_SSPEED)
-    jr c,usFree
-    ld (ix+O_Y),a
-usAnim:
-    ld l,(iy+P_SANIM)
-    ld h,(iy+P_SANIM+1)
-    call animate
-    jr usNext
-usFree:
-    ld (ix+O_STATE),0
-    ld hl,shotCount
-    dec (hl)
-usNext:
-    ld de,OBJ
-    add ix,de
+    push bc
+    call ubMove
     pop bc
+    jr nc,usNext
+    ld a,(shotCount)
+    dec a
+    ld (shotCount),a
+usNext:
+    ld a,l
+    add a,OBJ
+    ld l,a
     djnz usLoop
     ret
 
@@ -1662,28 +1803,41 @@ updateBullets:
 ubLoop:
     ld a,(hl)
     or a
-    call nz,ubMove
+    jr z,ubNext
+    call ubMove
+    jr nc,ubNext
+    ld a,(bulCount)
+    dec a
+    ld (bulCount),a
+ubNext:
     ld a,l
     add a,OBJ
     ld l,a
     jr nz,ubLoop            ; Low-Byte läuft nach 16 Schüssen auf 0
     ret
-ubMove:                     ; HL = aktiver Schuss (bleibt erhalten)
+ubMove:                     ; HL = aktiver Schuss (bleibt erhalten) → Carry: Bildschirm verlassen, Slot frei (Aufrufer zählt herunter)
     push hl
     push hl
     pop ix
-    ld l,(ix+B_XF)
-    ld h,(ix+O_X)
     ld e,(ix+B_VX)
     ld d,(ix+B_VX+1)
+    ld a,d
+    or e
+    jr z,ubY                ; Tempo 0: Achse steht (gerade Schüsse)
+    ld l,(ix+B_XF)
+    ld h,(ix+O_X)
     call bulletStep
     jr c,ubFree
     ld (ix+B_XF),l
     ld (ix+O_X),h
-    ld l,(ix+B_YF)
-    ld h,(ix+O_Y)
+ubY:
     ld e,(ix+B_VY)
     ld d,(ix+B_VY+1)
+    ld a,d
+    or e
+    jr z,ubYChk
+    ld l,(ix+B_YF)
+    ld h,(ix+O_Y)
     call bulletStep
     jr c,ubFree
     ld a,h
@@ -1691,6 +1845,12 @@ ubMove:                     ; HL = aktiver Schuss (bleibt erhalten)
     jr nc,ubFree
     ld (ix+B_YF),l
     ld (ix+O_Y),h
+    jr ubAnim
+ubYChk:
+    ld a,(ix+O_Y)
+    cp 192
+    jr nc,ubFree
+ubAnim:
     ld l,(ix+B_DEF)
     ld h,(ix+B_DEF+1)
     inc hl
@@ -1701,12 +1861,12 @@ ubMove:                     ; HL = aktiver Schuss (bleibt erhalten)
     ld l,a
     call animate
     pop hl
+    or a
     ret
 ubFree:
     ld (ix+O_STATE),0
-    ld hl,bulCount
-    dec (hl)
     pop hl
+    scf
     ret
 
 ; HL = Position 8.8, DE = Tempo 8.8 mit Vorzeichen → HL += DE, Carry = Bildschirm verlassen
@@ -1838,8 +1998,8 @@ boxHit:
 
 ; Spielerschüsse gegen Gegner (außen Schüsse, innen Box-Cache), danach Körperkontakt. Ergebnis wie früher (außen Gegner, innen Schüsse):
 ; je Gegner höchstens ein Treffer pro Bild, ein getroffener Gegner berührt den Spieler in diesem Bild nicht, alle Schüsse prüfen jedes Bild
+; Schaden und Durchschlag aus der Waffenstufe (B_DEF): HP − Schaden, ≤ 0 = Abschuss; Durchschlag: Schuss bleibt, seine Treffermaske überspringt schon getroffene Gegner
 collide:
-    ld iy,(G_PLAYER)
     xor a
     ld (coKill),a
     ld a,(boxCount)
@@ -1847,63 +2007,99 @@ collide:
     ret z
     ld a,(shotCount)
     or a
-    jr z,coBody
+    jp z,coBody
     ld hl,shots
-    ld b,MAXS
+    ld b,MAXPS
 coShot:
     ld a,(hl)
     or a
-    jr z,coShotNext
+    jp z,coShotNext
     push bc
     push hl
-    inc hl
-    inc hl
-    ld a,(hl)               ; O_X
-    add a,(iy+P_SHBX)
+    push hl
+    pop ix                  ; IX = Schuss
+    call maskOf
+    ld (coMask),hl
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    push hl
+    pop iy                  ; IY = Waffenstufe
+    ld a,(ix+O_X)
+    add a,(iy+S_HBX)
     ld c,a
-    inc hl
-    inc hl
-    ld a,(hl)               ; O_Y
-    add a,(iy+P_SHBY)
+    ld a,(ix+O_Y)
+    add a,(iy+S_HBY)
     ld (shY),a
-    ld d,(iy+P_SHBW)
-    ld e,(iy+P_SHBH)
+    ld d,(iy+S_HBW)
+    ld e,(iy+S_HBH)
     ld hl,boxCache
     ld a,(boxCount)
     ld b,a
-    call boxScan
-    jr nc,coShotDone
-    dec hl                  ; Treffer: Eintrag sperren (HL = Eintrag + 3)
-    dec hl
-    xor a
-    ld (hl),a               ; w
-    dec hl
-    ld (hl),a               ; x
+coScan:
+    call boxScan            ; C, D, E bleiben erhalten
+    jp nc,coShotDone
+    push bc
+    push de
+    push hl
     ld a,(boxCount)
-    sub b
-    ld c,a                  ; C = Eintrag
+    sub b                   ; A = Eintrag
     add a,boxSlot&255
     ld l,a
     ld h,boxSlot/256
-    ld l,(hl)
-    ld h,enemies/256
-    push hl
-    pop ix
+    ld a,(hl)
+    ld (coSlot),a
+    ld hl,(coMask)
+    call slotBit
+    ld c,a
+    and (hl)
+    jr z,coHit
+    pop hl                  ; schon getroffen (Durchschlag): weitersuchen
+    pop de
+    pop bc
+    inc hl
+    dec b
+    jr nz,coScan
+    jp coShotDone
+coHit:
+    ld a,(hl)
+    or c
+    ld (hl),a               ; Gegner für diesen Schuss merken
     pop hl
-    ld (hl),0               ; Schuss weg
+    pop de
+    pop bc
+    dec hl                  ; Treffer: Eintrag sperren (HL = Eintrag + 3)
+    dec hl
+    ld (hl),0               ; w
+    dec hl
+    ld (hl),0               ; x
+    ld a,(coSlot)
+    ld l,a
+    ld h,enemies/256
+    bit 0,(iy+W_FLAGS)
+    jr nz,coKeep
+    ld (ix+O_STATE),0       ; Schuss weg
+    ld a,(shotCount)
+    dec a
+    ld (shotCount),a
+coKeep:
     push hl
-    ld hl,shotCount
-    dec (hl)
+    pop ix                  ; IX = Gegner
     ld (ix+O_TIMER),6       ; Aufblitzen
-    dec (ix+O_HP)
+    ld a,(ix+O_HP)
+    sub (iy+W_DAMAGE)
+    jr c,coDead             ; Unterlauf
+    ld (ix+O_HP),a
     jr nz,coShotDone
+coDead:
+    ld (ix+O_HP),0
     ld (ix+O_STATE),3       ; Explosion
     ld (ix+O_ATICK),0
     ld (ix+O_AFRAME),0
     ld a,(G_SND_EXPL)
     call playSfx
-    ld a,c
-    inc a
+    ld a,(boxCount)
+    sub b
+    inc a                   ; Eintrag + 1
     ld hl,coKill
     cp (hl)
     jr c,coShotDone
@@ -1914,11 +2110,13 @@ coShotDone:
 coShotNext:
     ld de,OBJ
     add hl,de
-    djnz coShot
+    dec b
+    jp nz,coShot
 coBody:                     ; gegen Spieler: erster berührender Gegner
     ld a,(player+O_TIMER)
     or a
     ret nz
+    ld iy,(G_PLAYER)
     call playerBox
     ld a,(shX)
     ld c,a
@@ -2138,21 +2336,25 @@ bcShots:
     ld a,(shotCount)
     or a
     ret z
-    ld ix,shots             ; Schüsse verschwinden in tödlichen Pinseln (Mitte der Hitbox)
-    ld a,MAXS
+    ld ix,shots             ; Schüsse verschwinden in tödlichen Pinseln (Mitte der Hitbox aus der Waffenstufe)
+    ld a,MAXPS
 bcLoop:
     push af
     ld a,(ix+O_STATE)
     or a
     jr z,bcNext
-    ld a,(iy+P_SHBW)
+    ld l,(ix+B_DEF)
+    ld h,(ix+B_DEF+1)
+    push hl
+    pop iy
+    ld a,(iy+S_HBW)
     srl a
-    add a,(iy+P_SHBX)
+    add a,(iy+S_HBX)
     add a,(ix+O_X)
     ld b,a
-    ld a,(iy+P_SHBH)
+    ld a,(iy+S_HBH)
     srl a
-    add a,(iy+P_SHBY)
+    add a,(iy+S_HBY)
     add a,(ix+O_Y)
     ld c,a
     call solidAt
@@ -2235,7 +2437,7 @@ bsShots:
     or a
     jr z,bsBul
     ld hl,shots
-    ld b,MAXS
+    ld b,MAXPS
     call drawPool
 bsBul:
     ; Gegnerschüsse vor den Gegnern (unsichtbare Schüsse wären unfair), Start rotiert: zu viele in einer Zeile flackern
@@ -2255,34 +2457,30 @@ bsBulDone:
     ; Gegner mit rotierender Startposition (Flackern statt Verschlucken)
     ld a,(rot)
     inc a
-    cp MAXE
-    jr c,bsRot
-    xor a
-bsRot:
+    and MAXE-1              ; MAXE = 16: die Gegner füllen genau eine Seite, das Low-Byte läuft um
     ld (rot),a
-    ld c,a
+    add a,a
+    add a,a
+    add a,a
+    add a,a
+    ld l,a
+    ld h,enemies/256
     ld b,MAXE
 bsEnemyLoop:
+    ld a,(hl)
+    or a
+    jr z,bsENext            ; freier Slot
     push bc
-    ld l,c
-    ld h,0
-    add hl,hl
-    add hl,hl
-    add hl,hl
-    add hl,hl
-    ld de,enemies
-    add hl,de
+    push hl
     push hl
     pop ix
     call drawEnemy
+    pop hl
     pop bc
-    ld a,c
-    inc a
-    cp MAXE
-    jr c,bsNoWrap
-    xor a
-bsNoWrap:
-    ld c,a
+bsENext:
+    ld a,l
+    add a,OBJ
+    ld l,a
     djnz bsEnemyLoop
     ; Terminator
     ld a,(sprCount)

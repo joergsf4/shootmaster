@@ -1,13 +1,13 @@
-// Projekt → Binärdaten gemäß docs/data-format.md (Version 1)
+// Projekt → Binärdaten gemäß docs/data-format.md (Formatversion DATA_VERSION)
 import { encodeNameEntry, encodeTile, crop, flipH, flipV } from './hw';
 import { bakePath, formationMembers } from './path';
 import { periodTable, sfxBytes, songBytes } from './sound';
 import {
-  ACROSS, MAX_BG_TILES, MAX_SPRITE_TILES, SCREEN_H, SCREEN_W,
-  type Hitbox, type Level, type Metatile, type Project, type SpriteGfx, type TileRef,
+  ACROSS, MAX_BG_TILES, MAX_SHOTS, MAX_SPRITE_TILES, SCREEN_H, SCREEN_W,
+  type Emitter, type Hitbox, type Level, type Metatile, type Orientation, type Project, type SpriteGfx, type TileRef,
 } from './types';
 
-export const DATA_VERSION = 3;
+export const DATA_VERSION = 4;
 export const BANK_SIZE = 0x4000;
 export const SLOT1 = 0x4000;
 export const SLOT2 = 0x8000;
@@ -49,6 +49,13 @@ export function opaqueBox(s: SpriteGfx): Hitbox {
 /** Schuss-Geschwindigkeit je Richtung i (i × 22,5°, 0 = rechts, 4 = unten): vx, vy in 1/256 px/Frame (8.8 mit Vorzeichen) */
 export const shotVelocity = (speed: number, i: number) =>
   [Math.cos, Math.sin].map((f) => Math.max(-0x7fff, Math.min(0x7fff, Math.round(f((i * Math.PI) / 8) * speed * 256))) || 0);
+
+/** Schussaustritt im Level: Versatz oben links Schiff → oben links Schuss (px) und absolute Richtung (0 = rechts, 4 = unten). Vertikal ist „vorn“ oben. */
+export function emitterPlacement(e: Emitter, o: Orientation, ship: { width: number; height: number }, shot: { width: number; height: number }) {
+  const cx = (ship.width >> 1) - (shot.width >> 1), cy = (ship.height >> 1) - (shot.height >> 1);
+  return o === 'h' ? { dx: e.ahead + cx, dy: e.side + cy, dir: e.dir & 15 } : { dx: e.side + cx, dy: cy - e.ahead, dir: (e.dir + 12) & 15 };
+}
+const UPGRADE_STYLE = { off: 0, direct: 1, gauge: 2 } as const;
 
 /** Einfacher Linker für eine 16-KB-Bank. */
 class Bank {
@@ -172,7 +179,7 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
 
   // ---------- Bank 1: Global ----------
   const g = new Bank(SLOT2, 'Globale Daten', BANK_SIZE - 16); // letzte 16 Byte = ROM-Header
-  g.put([0x53, 0x48, 0x4d, 0x50, DATA_VERSION, p.levels.length, 0, 0]); // 00..07
+  g.put([0x53, 0x48, 0x4d, 0x50, DATA_VERSION, p.levels.length, 0, 0]); // 00..07 (06: → Upgrade-Block)
   g.put(padPalette(p.palettes.sprite, true)); // 08..17
   const H_SPR_COUNT = g.reserve(2); // 18
   const H_SPR_PTR = g.reserve(2); // 1A
@@ -203,20 +210,39 @@ export function compileProject(p: Project, opts: CompileOptions = {}): CompiledD
   // Spieler
   const pl = p.player;
   const ps = need(pl.spriteId, 'Spieler');
-  need(pl.shotSpriteId, 'Spielerschuss');
   const hb = (h: Hitbox) => [h.x, h.y, h.w, h.h].map(clampB);
+  const i8 = (v: number) => Math.max(-128, Math.min(127, Math.round(v))) & 0xff;
   g.setWord(H_PLAYER, g.put([
     clampB(pl.speed), ...hb(pl.hitbox),
     8, SCREEN_W - ps.width, 0, SCREEN_H - ps.height,
-    ...w(animAddr.get(pl.spriteId)!), ...w(animAddr.get(pl.shotSpriteId)!),
-    clampB(pl.shotSpeed), ...hb(pl.shotHitbox), clampB(Math.max(1, pl.fireRate)),
-    pl.shotOffset.x & 0xff, pl.shotOffset.y & 0xff, clampB(Math.max(1, pl.lives)),
+    ...w(animAddr.get(pl.spriteId)!), ...new Array(10).fill(0), // 11–20: bis v3 der Schuss, jetzt Waffen
+    clampB(Math.max(1, pl.lives)),
   ]));
+
+  // Waffen: je Stufe ein Record, die ersten 8 Byte wie die Schussdefinition der Gegner (Animation, Hitbox)
+  const start = p.weapons.findIndex((x) => x.id === pl.weaponId);
+  if (start < 0) throw new CompileError('Spieler: Startwaffe fehlt');
+  const weaponAddrs = p.weapons.map((wp) => {
+    const ss = need(wp.spriteId, `Waffe ${wp.name}`);
+    if (!wp.levels.length) throw new CompileError(`Waffe „${wp.name}“: keine Stufe`);
+    const lvAddrs = wp.levels.map((l, li) => {
+      if (l.emitters.length > MAX_SHOTS) throw new CompileError(`Waffe „${wp.name}“, Stufe ${li + 1}: mehr als ${MAX_SHOTS} Schüsse je Salve`);
+      const emit = (o: Orientation) => l.emitters.flatMap((e) => {
+        const q = emitterPlacement(e, o, ps, ss);
+        return [i8(q.dx), i8(q.dy), ...shotVelocity(wp.speed, q.dir).flatMap((v) => w(v & 0xffff))];
+      });
+      return g.put([clampB(Math.max(1, l.damage)), wp.pierce ? 1 : 0, ...w(animAddr.get(ss.id)!), ...hb(wp.hitbox ?? opaqueBox(ss)),
+        clampB(Math.max(1, l.fireRate)), l.emitters.length, ...emit('h'), ...emit('v')]);
+    });
+    return g.put([wp.levels.length, ...lvAddrs.flatMap(w)]);
+  });
+  const weaponTable = g.put(weaponAddrs.flatMap(w));
+  // Upgrade-Block (32 Byte); Kapseln, Satelliten, Leiste, Ladeschuss folgen ab E2 in den reservierten Byte
+  g.setWord(SLOT2 + 6, g.put([UPGRADE_STYLE[p.upgrades.style] ?? 0, 0, start, p.weapons.length, ...w(weaponTable), ...new Array(26).fill(0)]));
 
   // Gegnertypen (je 16 Byte) mit Schussdefinition
   const typeIndex = new Map<string, number>();
   const typeBytes: number[] = [];
-  const i8 = (v: number) => Math.max(-128, Math.min(127, Math.round(v))) & 0xff;
   const center = (h: Hitbox) => [h.x + (h.w >> 1), h.y + (h.h >> 1)];
   p.enemyTypes.forEach((t, i) => {
     const es = need(t.spriteId, `Gegnertyp ${t.name}`);
